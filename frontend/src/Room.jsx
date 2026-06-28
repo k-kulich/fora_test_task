@@ -16,7 +16,8 @@ const RoomPage = () => {
 
   const roomRef = useRef(null);
   const localVideoRef = useRef(null);
-  const remoteVideoRefs = useRef({});
+  // Храним ссылки на элементы (видео и аудио) для удалённых участников
+  const remoteElements = useRef({});
 
   // Получение токена
   useEffect(() => {
@@ -56,59 +57,83 @@ const RoomPage = () => {
 
     room.on(RoomEvent.ParticipantDisconnected, (participant) => {
       setParticipants((prev) => prev.filter((p) => p.sid !== participant.sid));
-      // удаляем видео элемент
-      const vid = remoteVideoRefs.current[participant.sid];
-      if (vid) {
-        vid.srcObject = null;
-        delete remoteVideoRefs.current[participant.sid];
+      // Удаляем DOM-элементы этого участника
+      const el = remoteElements.current[participant.sid];
+      if (el) {
+        if (el.videoWrapper) el.videoWrapper.remove();
+        if (el.audioEl) el.audioEl.remove();
+        delete remoteElements.current[participant.sid];
       }
     });
 
     room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
-      // если это видео трек удалённого участника
-      if (track.kind === 'video' && !participant.isLocal) {
-        const sid = participant.sid;
-        let vid = remoteVideoRefs.current[sid];
-        if (!vid) {
-          // создадим элемент динамически? но проще использовать ref, но мы не знаем, когда будет отрендерен div
-          // поэтому воспользуемся подходом: в рендере мы создаём div для каждого участника, а здесь найдём его
-          // или просто создадим и добавим в контейнер
-          const container = document.getElementById('video-grid');
-          if (container) {
-            const wrapper = document.createElement('div');
-            wrapper.style.position = 'relative';
-            wrapper.style.margin = '8px';
-            vid = document.createElement('video');
-            vid.autoplay = true;
-            vid.playsInline = true;
-            vid.style.width = '200px';
-            vid.style.height = '150px';
-            vid.style.background = '#333';
-            vid.style.borderRadius = '8px';
-            const label = document.createElement('span');
-            label.style.position = 'absolute';
-            label.style.bottom = '4px';
-            label.style.left = '8px';
-            label.style.color = '#fff';
-            label.style.fontSize = '12px';
-            label.textContent = participant.identity || 'Участник';
-            wrapper.appendChild(vid);
-            wrapper.appendChild(label);
-            container.appendChild(wrapper);
-            remoteVideoRefs.current[sid] = vid;
-          }
+      // Для локального участника не создаём удалённые элементы
+      if (participant.isLocal) return;
+
+      const sid = participant.sid;
+      // Создаём структуру для хранения элементов, если её нет
+      if (!remoteElements.current[sid]) {
+        remoteElements.current[sid] = {};
+      }
+
+      if (track.kind === 'video') {
+        // Создаём видео-элемент
+        const container = document.getElementById('video-grid');
+        if (!container) return;
+        // Проверим, не существует ли уже видео-обёртка
+        let wrapper = remoteElements.current[sid].videoWrapper;
+        if (!wrapper) {
+          wrapper = document.createElement('div');
+          wrapper.style.position = 'relative';
+          wrapper.style.margin = '8px';
+          wrapper.dataset.participantId = sid;
+          const vid = document.createElement('video');
+          vid.autoplay = true;
+          vid.playsInline = true;
+          vid.style.width = '200px';
+          vid.style.height = '150px';
+          vid.style.background = '#333';
+          vid.style.borderRadius = '8px';
+          const label = document.createElement('span');
+          label.style.position = 'absolute';
+          label.style.bottom = '4px';
+          label.style.left = '8px';
+          label.style.color = '#fff';
+          label.style.fontSize = '12px';
+          label.textContent = participant.identity || 'Участник';
+          wrapper.appendChild(vid);
+          wrapper.appendChild(label);
+          container.appendChild(wrapper);
+          remoteElements.current[sid].videoWrapper = wrapper;
+          remoteElements.current[sid].videoEl = vid;
         }
-        if (vid) {
-          track.attach(vid);
+        // Прикрепляем трек к видео
+        track.attach(remoteElements.current[sid].videoEl);
+      } else if (track.kind === 'audio') {
+        // Создаём скрытый аудио-элемент
+        let audioEl = remoteElements.current[sid].audioEl;
+        if (!audioEl) {
+          audioEl = document.createElement('audio');
+          audioEl.autoplay = true;
+          audioEl.style.display = 'none';
+          document.body.appendChild(audioEl);
+          remoteElements.current[sid].audioEl = audioEl;
         }
+        track.attach(audioEl);
       }
     });
 
     room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
-      if (track.kind === 'video' && !participant.isLocal) {
-        const vid = remoteVideoRefs.current[participant.sid];
-        if (vid) {
-          track.detach(vid);
+      if (participant.isLocal) return;
+      const sid = participant.sid;
+      if (track.kind === 'video') {
+        const vid = remoteElements.current[sid]?.videoEl;
+        if (vid) track.detach(vid);
+      } else if (track.kind === 'audio') {
+        const audioEl = remoteElements.current[sid]?.audioEl;
+        if (audioEl) {
+          track.detach(audioEl);
+          // Можно удалить аудио-элемент, но оставим, чтобы не пересоздавать при повторном подключении
         }
       }
     });
@@ -127,7 +152,7 @@ const RoomPage = () => {
         setCameraEnabled(true);
         setMicEnabled(true);
 
-        // Прикрепляем локальное видео к localVideoRef
+        // Прикрепляем локальное видео
         const localVid = localVideoRef.current;
         if (localVid) {
           const videoTracks = room.localParticipant.videoTrackPublications;
@@ -150,11 +175,12 @@ const RoomPage = () => {
 
     return () => {
       room.disconnect();
-      // очистка
-      Object.values(remoteVideoRefs.current).forEach((vid) => {
-        vid.srcObject = null;
+      // Очистка DOM-элементов
+      Object.values(remoteElements.current).forEach((el) => {
+        if (el.videoWrapper) el.videoWrapper.remove();
+        if (el.audioEl) el.audioEl.remove();
       });
-      remoteVideoRefs.current = {};
+      remoteElements.current = {};
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = null;
       }
@@ -267,7 +293,7 @@ const RoomPage = () => {
             Я
           </span>
         </div>
-        {/* Удалённые участники будут добавляться динамически через TrackSubscribed */}
+        {/* Удалённые видео добавляются динамически */}
       </div>
 
       <div
