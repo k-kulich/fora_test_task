@@ -5,12 +5,14 @@ services:
     image: livekit/livekit-server:latest
     container_name: livekit
     restart: unless-stopped
-    network_mode: host
-    command: --config /etc/livekit.yaml
+    ports:
+      - "7880:7880"
+      - "7881:7881/udp"
+      - "50000-60000:50000-60000/udp"   # диапазон для медиа
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml
     environment:
-      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_KEY=devkey   # не обязательно, если есть в yaml
       - LIVEKIT_API_SECRET=secret
 
   backend:
