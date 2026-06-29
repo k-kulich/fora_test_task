@@ -6,10 +6,14 @@ const RoomPage = () => {
   const { roomId } = useParams();
   const navigate = useNavigate();
 
+  const savedUserName = sessionStorage.getItem(`userName_${roomId}`) || '';
+  const savedCamera = sessionStorage.getItem(`cameraEnabled_${roomId}`) !== 'false';
+  const savedMic = sessionStorage.getItem(`micEnabled_${roomId}`) !== 'false';
+
   const [step, setStep] = useState('prejoin');
-  const [userName, setUserName] = useState('');
-  const [cameraEnabled, setCameraEnabled] = useState(true);
-  const [micEnabled, setMicEnabled] = useState(true);
+  const [userName, setUserName] = useState(savedUserName);
+  const [cameraEnabled, setCameraEnabled] = useState(savedCamera);
+  const [micEnabled, setMicEnabled] = useState(savedMic);
   const [localStream, setLocalStream] = useState(null);
 
   const [token, setToken] = useState(null);
@@ -18,23 +22,50 @@ const RoomPage = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [participants, setParticipants] = useState([]);
 
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [screenShareParticipantSid, setScreenShareParticipantSid] = useState(null);
+
+  // Для prejoin храним треки отдельно
+  const [prejoinVideoTrack, setPrejoinVideoTrack] = useState(null);
+  const [prejoinAudioTrack, setPrejoinAudioTrack] = useState(null);
+
   const roomRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteElements = useRef({});
   const prejoinVideoRef = useRef(null);
+  const screenVideoRef = useRef(null);
 
-  // ===== PreJoin logic =====
+  // Сохраняем имя и настройки
+  useEffect(() => {
+    sessionStorage.setItem(`userName_${roomId}`, userName);
+  }, [userName, roomId]);
+
+  useEffect(() => {
+    sessionStorage.setItem(`cameraEnabled_${roomId}`, cameraEnabled);
+  }, [cameraEnabled, roomId]);
+
+  useEffect(() => {
+    sessionStorage.setItem(`micEnabled_${roomId}`, micEnabled);
+  }, [micEnabled, roomId]);
+
+  // ===== PreJoin =====
   useEffect(() => {
     if (step !== 'prejoin') return;
     const getStream = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        setLocalStream(stream);
+        const videoTrack = stream.getVideoTracks()[0];
+        const audioTrack = stream.getAudioTracks()[0];
+        setPrejoinVideoTrack(videoTrack);
+        setPrejoinAudioTrack(audioTrack);
         if (prejoinVideoRef.current) {
           prejoinVideoRef.current.srcObject = stream;
         }
-        setCameraEnabled(true);
-        setMicEnabled(true);
+        // Применяем сохранённые настройки
+        if (!savedCamera) videoTrack.enabled = false;
+        if (!savedMic) audioTrack.enabled = false;
+        setCameraEnabled(savedCamera);
+        setMicEnabled(savedMic);
       } catch (err) {
         console.error('Error accessing media devices:', err);
         setError('Не удалось получить доступ к камере и микрофону');
@@ -42,29 +73,56 @@ const RoomPage = () => {
     };
     getStream();
     return () => {
-      if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-        setLocalStream(null);
-      }
+      if (prejoinVideoTrack) prejoinVideoTrack.stop();
+      if (prejoinAudioTrack) prejoinAudioTrack.stop();
     };
   }, [step]);
 
-  const togglePrejoinCamera = () => {
-    if (!localStream) return;
-    const videoTracks = localStream.getVideoTracks();
-    videoTracks.forEach(track => {
-      track.enabled = !cameraEnabled;
-    });
-    setCameraEnabled(!cameraEnabled);
+  const togglePrejoinCamera = async () => {
+    if (cameraEnabled) {
+      if (prejoinVideoTrack) {
+        prejoinVideoTrack.stop();
+        setPrejoinVideoTrack(null);
+      }
+      setCameraEnabled(false);
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        const newTrack = stream.getVideoTracks()[0];
+        setPrejoinVideoTrack(newTrack);
+        // Обновляем отображение
+        const combined = new MediaStream();
+        if (prejoinAudioTrack) combined.addTrack(prejoinAudioTrack);
+        combined.addTrack(newTrack);
+        if (prejoinVideoRef.current) prejoinVideoRef.current.srcObject = combined;
+        setCameraEnabled(true);
+      } catch (e) {
+        console.error(e);
+      }
+    }
   };
 
-  const togglePrejoinMic = () => {
-    if (!localStream) return;
-    const audioTracks = localStream.getAudioTracks();
-    audioTracks.forEach(track => {
-      track.enabled = !micEnabled;
-    });
-    setMicEnabled(!micEnabled);
+  const togglePrejoinMic = async () => {
+    if (micEnabled) {
+      if (prejoinAudioTrack) {
+        prejoinAudioTrack.stop();
+        setPrejoinAudioTrack(null);
+      }
+      setMicEnabled(false);
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const newTrack = stream.getAudioTracks()[0];
+        setPrejoinAudioTrack(newTrack);
+        const combined = new MediaStream();
+        if (prejoinVideoTrack) combined.addTrack(prejoinVideoTrack);
+        combined.addTrack(newTrack);
+        if (prejoinVideoRef.current) prejoinVideoRef.current.srcObject = combined;
+        setMicEnabled(true);
+      } catch (e) {
+        console.error(e);
+      }
+    }
   };
 
   const joinRoom = async () => {
@@ -115,16 +173,35 @@ const RoomPage = () => {
         if (el.audioEl) el.audioEl.remove();
         delete remoteElements.current[participant.sid];
       }
+      if (screenShareParticipantSid === participant.sid) {
+        setScreenShareParticipantSid(null);
+        if (screenVideoRef.current) {
+          screenVideoRef.current.srcObject = null;
+        }
+      }
     });
 
     room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
       if (participant.isLocal) return;
       const sid = participant.sid;
-      if (!remoteElements.current[sid]) {
-        remoteElements.current[sid] = {};
+
+      if (track.kind === 'video' && track.source === Track.Source.ScreenShare) {
+        if (screenShareParticipantSid && screenShareParticipantSid !== sid) {
+          console.log('Screen share already active, skipping');
+          return;
+        }
+        setScreenShareParticipantSid(sid);
+        if (screenVideoRef.current) {
+          track.attach(screenVideoRef.current);
+          console.log('Screen share attached for participant', sid);
+        }
+        return;
       }
 
-      if (track.kind === 'video') {
+      if (track.kind === 'video' && track.source === Track.Source.Camera) {
+        if (!remoteElements.current[sid]) {
+          remoteElements.current[sid] = {};
+        }
         const container = document.getElementById('video-grid');
         if (!container) return;
         let wrapper = remoteElements.current[sid].videoWrapper;
@@ -146,7 +223,6 @@ const RoomPage = () => {
           label.style.left = '8px';
           label.style.color = '#fff';
           label.style.fontSize = '12px';
-          // 👇 ИСПРАВЛЕНИЕ: показываем participant.name вместо identity
           label.textContent = participant.name || 'Участник';
           wrapper.appendChild(vid);
           wrapper.appendChild(label);
@@ -156,6 +232,9 @@ const RoomPage = () => {
         }
         track.attach(remoteElements.current[sid].videoEl);
       } else if (track.kind === 'audio') {
+        if (!remoteElements.current[sid]) {
+          remoteElements.current[sid] = {};
+        }
         let audioEl = remoteElements.current[sid].audioEl;
         if (!audioEl) {
           audioEl = document.createElement('audio');
@@ -172,6 +251,14 @@ const RoomPage = () => {
     room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
       if (participant.isLocal) return;
       const sid = participant.sid;
+      if (track.kind === 'video' && track.source === Track.Source.ScreenShare) {
+        console.log('Screen share track unsubscribed for participant', sid);
+        setScreenShareParticipantSid(null);
+        if (screenVideoRef.current) {
+          screenVideoRef.current.srcObject = null;
+        }
+        return;
+      }
       if (track.kind === 'video') {
         const vid = remoteElements.current[sid]?.videoEl;
         if (vid) track.detach(vid);
@@ -184,6 +271,8 @@ const RoomPage = () => {
     room.on(RoomEvent.Disconnected, () => {
       setIsConnected(false);
       roomRef.current = null;
+      setScreenShareParticipantSid(null);
+      setIsScreenSharing(false);
     });
 
     const connect = async () => {
@@ -191,19 +280,25 @@ const RoomPage = () => {
         await room.connect(wsUrl, token);
         setIsConnected(true);
 
-        await room.localParticipant.enableCameraAndMicrophone();
-        await room.localParticipant.setCameraEnabled(cameraEnabled);
-        await room.localParticipant.setMicrophoneEnabled(micEnabled);
-
-        const localVid = localVideoRef.current;
-        if (localVid) {
-          const videoTracks = room.localParticipant.videoTrackPublications;
-          if (videoTracks.size > 0) {
-            const pub = videoTracks.values().next().value;
-            if (pub.track) {
-              pub.track.attach(localVid);
-            }
+        // Публикуем камеру и микрофон в зависимости от состояния
+        if (cameraEnabled) {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          const track = stream.getVideoTracks()[0];
+          await room.localParticipant.publishTrack(track, { source: Track.Source.Camera });
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
           }
+        } else {
+          // Если камера выключена, то локальное видео должно быть чёрным
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = null;
+          }
+        }
+
+        if (micEnabled) {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const track = stream.getAudioTracks()[0];
+          await room.localParticipant.publishTrack(track, { source: Track.Source.Microphone });
         }
         console.log('Connected to room');
       } catch (err) {
@@ -228,16 +323,99 @@ const RoomPage = () => {
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = null;
       }
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = null;
+      }
+      setScreenShareParticipantSid(null);
+      setIsScreenSharing(false);
     };
   }, [step, token, wsUrl]);
 
-  // ===== Управление в звонке =====
+  // ===== Демонстрация экрана =====
+  const toggleScreenShare = async () => {
+    if (!roomRef.current) return;
+
+    if (screenShareParticipantSid && !isScreenSharing) {
+      alert('Кто-то уже демонстрирует экран');
+      return;
+    }
+
+    if (isScreenSharing) {
+      await stopScreenShare();
+      return;
+    }
+
+    // Начать демонстрацию
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      const track = stream.getVideoTracks()[0];
+      if (!track) {
+        throw new Error('No video track available');
+      }
+
+      const publication = await roomRef.current.localParticipant.publishTrack(track, {
+        source: Track.Source.ScreenShare,
+        name: 'screen',
+      });
+
+      setIsScreenSharing(true);
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = stream;
+        screenVideoRef.current.muted = true;
+      }
+
+      track.onended = () => {
+        stopScreenShare();
+      };
+    } catch (err) {
+      console.error('Error starting screen share:', err);
+      alert('Не удалось начать демонстрацию экрана: ' + err.message);
+    }
+  };
+
+  const stopScreenShare = async () => {
+    if (!roomRef.current) return;
+    const pub = roomRef.current.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+    if (pub && pub.track) {
+      pub.track.stop(); // физически останавливаем захват
+      await roomRef.current.localParticipant.unpublishTrack(pub.track);
+    }
+    setIsScreenSharing(false);
+    setScreenShareParticipantSid(null);
+    if (screenVideoRef.current) {
+      screenVideoRef.current.srcObject = null;
+    }
+  };
+
+  // ===== Управление камерой и микрофоном в звонке =====
   const toggleCamera = async () => {
     if (!roomRef.current) return;
+    const participant = roomRef.current.localParticipant;
     try {
-      const newState = !cameraEnabled;
-      await roomRef.current.localParticipant.setCameraEnabled(newState);
-      setCameraEnabled(newState);
+      if (cameraEnabled) {
+        // Выключаем камеру
+        const pub = participant.getTrackPublication(Track.Source.Camera);
+        if (pub && pub.track) {
+          pub.track.stop();
+          await participant.unpublishTrack(pub.track);
+        }
+        setCameraEnabled(false);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = null;
+        }
+      } else {
+        // Включаем камеру
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        const track = stream.getVideoTracks()[0];
+        await participant.publishTrack(track, { source: Track.Source.Camera });
+        setCameraEnabled(true);
+        if (localVideoRef.current) {
+          // Создаём новый MediaStream с этим треком, чтобы отобразить локальное видео
+          const newStream = new MediaStream();
+          newStream.addTrack(track);
+          localVideoRef.current.srcObject = newStream;
+        }
+      }
     } catch (err) {
       console.error('Camera toggle error:', err);
     }
@@ -245,10 +423,21 @@ const RoomPage = () => {
 
   const toggleMic = async () => {
     if (!roomRef.current) return;
+    const participant = roomRef.current.localParticipant;
     try {
-      const newState = !micEnabled;
-      await roomRef.current.localParticipant.setMicrophoneEnabled(newState);
-      setMicEnabled(newState);
+      if (micEnabled) {
+        const pub = participant.getTrackPublication(Track.Source.Microphone);
+        if (pub && pub.track) {
+          pub.track.stop();
+          await participant.unpublishTrack(pub.track);
+        }
+        setMicEnabled(false);
+      } else {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const track = stream.getAudioTracks()[0];
+        await participant.publishTrack(track, { source: Track.Source.Microphone });
+        setMicEnabled(true);
+      }
     } catch (err) {
       console.error('Mic toggle error:', err);
     }
@@ -256,6 +445,9 @@ const RoomPage = () => {
 
   const leaveRoom = () => {
     if (roomRef.current) roomRef.current.disconnect();
+    sessionStorage.removeItem(`userName_${roomId}`);
+    sessionStorage.removeItem(`cameraEnabled_${roomId}`);
+    sessionStorage.removeItem(`micEnabled_${roomId}`);
     navigate('/');
   };
 
@@ -311,6 +503,28 @@ const RoomPage = () => {
         </div>
       </div>
 
+      <div style={{ width: '100%', height: '300px', background: '#111', display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
+        <video
+          ref={screenVideoRef}
+          autoPlay
+          playsInline
+          style={{ maxWidth: '100%', maxHeight: '100%', background: '#222' }}
+        />
+        {!screenShareParticipantSid && !isScreenSharing && (
+          <span style={{ color: '#666', position: 'absolute' }}>Никто не делится экраном</span>
+        )}
+        {isScreenSharing && (
+          <span style={{ color: '#0f0', position: 'absolute', bottom: '10px', left: '10px', fontSize: '14px' }}>
+            Вы демонстрируете экран
+          </span>
+        )}
+        {screenShareParticipantSid && !isScreenSharing && (
+          <span style={{ color: '#ff0', position: 'absolute', bottom: '10px', left: '10px', fontSize: '14px' }}>
+            Демонстрация экрана
+          </span>
+        )}
+      </div>
+
       <div id="video-grid" style={{ flex: 1, display: 'flex', flexWrap: 'wrap', alignContent: 'flex-start', padding: '10px', gap: '10px', background: '#222', overflow: 'auto' }}>
         <div style={{ position: 'relative', margin: '8px' }}>
           <video
@@ -326,12 +540,26 @@ const RoomPage = () => {
         </div>
       </div>
 
-      <div style={{ padding: '12px', background: '#1a1a1a', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '20px' }}>
+      <div style={{ padding: '12px', background: '#1a1a1a', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '20px', flexWrap: 'wrap' }}>
         <button onClick={toggleCamera} style={{ padding: '8px 16px', background: cameraEnabled ? '#4CAF50' : '#f44336', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
           {cameraEnabled ? 'Выключить камеру' : 'Включить камеру'}
         </button>
         <button onClick={toggleMic} style={{ padding: '8px 16px', background: micEnabled ? '#4CAF50' : '#f44336', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
           {micEnabled ? 'Выключить микрофон' : 'Включить микрофон'}
+        </button>
+        <button
+          onClick={toggleScreenShare}
+          disabled={!!screenShareParticipantSid && !isScreenSharing}
+          style={{
+            padding: '8px 16px',
+            background: isScreenSharing ? '#f44336' : (screenShareParticipantSid ? '#888' : '#4CAF50'),
+            border: 'none',
+            borderRadius: '4px',
+            color: '#fff',
+            cursor: (screenShareParticipantSid && !isScreenSharing) ? 'not-allowed' : 'pointer',
+          }}
+        >
+          {isScreenSharing ? 'Остановить экран' : (screenShareParticipantSid ? 'Экран занят' : 'Поделиться экраном')}
         </button>
         <span style={{ color: '#aaa' }}>
           {isConnected ? '🟢 Подключено' : '🔴 Подключение...'}
