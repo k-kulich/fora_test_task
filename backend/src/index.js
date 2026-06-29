@@ -1,8 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const { generateRoomId, createRoom, getTokenForRoom, roomExists } = require('./rooms');
-const { generateHostToken, generateGuestToken } = require('./livekit');
+const { generateRoomId, createRoom, roomExists, deleteRoom } = require('./rooms');
+const { generateToken } = require('./livekit');
 
 dotenv.config();
 
@@ -12,14 +12,12 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Создание комнаты (хост)
+// Создание комнаты (без токена)
 app.post('/api/rooms', async (req, res) => {
   try {
     let { roomName } = req.body;
     let roomId;
-
     if (roomName) {
-      // Валидация: только латиница, цифры, дефис, подчёркивание
       if (!/^[a-zA-Z0-9_-]+$/.test(roomName)) {
         return res.status(400).json({ error: 'Invalid room name' });
       }
@@ -29,37 +27,35 @@ app.post('/api/rooms', async (req, res) => {
       }
       createRoom(roomId);
     } else {
-      // Если имя не указано, генерируем случайное
       roomId = generateRoomId();
       createRoom(roomId);
     }
-
-    const hostToken = generateHostToken(roomId);
     const joinUrl = `${process.env.PUBLIC_URL}/room/${roomId}`;
-    res.json({ roomId, hostToken, joinUrl });
+    res.json({ roomId, joinUrl });
   } catch (error) {
     console.error('Error creating room:', error);
     res.status(500).json({ error: 'Failed to create room' });
   }
 });
 
-// Получение гостевого токена
+// Получение токена (с именем)
 app.get('/api/rooms/:roomId/token', (req, res) => {
   const { roomId } = req.params;
+  const name = req.query.name || 'User';
   if (!roomExists(roomId)) {
     return res.status(404).json({ error: 'Room not found' });
   }
   try {
-    const guestToken = generateGuestToken(roomId);
+    const token = generateToken(roomId, name);
     const wsUrl = process.env.LIVEKIT_WS_URL || 'ws://localhost:7880';
-    res.json({ token: guestToken, wsUrl });
+    res.json({ token, wsUrl });
   } catch (error) {
-    console.error('Error generating guest token:', error);
+    console.error('Error generating token:', error);
     res.status(500).json({ error: 'Failed to generate token' });
   }
 });
 
-// Проверка существования комнаты (опционально)
+// Проверка существования комнаты
 app.get('/api/rooms/:roomId', (req, res) => {
   const { roomId } = req.params;
   if (roomExists(roomId)) {

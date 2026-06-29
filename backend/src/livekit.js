@@ -10,13 +10,14 @@ if (!API_KEY || !API_SECRET) {
   process.exit(1);
 }
 
-function generateHostToken(roomId) {
+function generateToken(roomId, name) {
+  const identity = `${name}-${Date.now()}`;
   const payload = {
-    iss: API_KEY,                                    // issuer = API Key
-    exp: Math.floor(Date.now() / 1000) + 3600,       // срок действия 1 час
-    nbf: Math.floor(Date.now() / 1000) - 10,         // начинает действовать на 10 секунд раньше
-    sub: `host-${Date.now()}`,                       // уникальный идентификатор участника
-    name: 'Host',
+    iss: API_KEY,
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    nbf: Math.floor(Date.now() / 1000) - 10,
+    sub: identity,
+    name: name,
     video: {
       room: roomId,
       roomJoin: true,
@@ -27,24 +28,4 @@ function generateHostToken(roomId) {
   return jwt.sign(payload, API_SECRET, { algorithm: 'HS256' });
 }
 
-function generateGuestToken(roomId) {
-  const payload = {
-    iss: API_KEY,
-    exp: Math.floor(Date.now() / 1000) + 3600,
-    nbf: Math.floor(Date.now() / 1000) - 10,
-    sub: `guest-${Date.now()}`,
-    name: 'Guest',
-    video: {
-      room: roomId,
-      roomJoin: true,
-      canPublish: true,      // разрешаем публиковать (камера/микрофон)
-      canSubscribe: true,
-    },
-  };
-  return jwt.sign(payload, API_SECRET, { algorithm: 'HS256' });
-}
-
-module.exports = {
-  generateHostToken,
-  generateGuestToken,
-};
+module.exports = { generateToken };

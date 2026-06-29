@@ -6,45 +6,93 @@ const RoomPage = () => {
   const { roomId } = useParams();
   const navigate = useNavigate();
 
+  const [step, setStep] = useState('prejoin');
+  const [userName, setUserName] = useState('');
+  const [cameraEnabled, setCameraEnabled] = useState(true);
+  const [micEnabled, setMicEnabled] = useState(true);
+  const [localStream, setLocalStream] = useState(null);
+
   const [token, setToken] = useState(null);
   const [wsUrl, setWsUrl] = useState(null);
   const [error, setError] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [participants, setParticipants] = useState([]);
-  const [cameraEnabled, setCameraEnabled] = useState(true);
-  const [micEnabled, setMicEnabled] = useState(true);
 
   const roomRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteElements = useRef({});
+  const prejoinVideoRef = useRef(null);
 
-  // Получение токена
+  // ===== PreJoin logic =====
   useEffect(() => {
-    const fetchToken = async () => {
+    if (step !== 'prejoin') return;
+    const getStream = async () => {
       try {
-        const response = await fetch(
-          `${import.meta.env.VITE_API_URL || 'http://localhost:3000/api'}/rooms/${roomId}/token`
-        );
-        if (!response.ok) throw new Error('Комната не найдена или неактивна');
-        const data = await response.json();
-        setToken(data.token);
-        setWsUrl(data.wsUrl || 'ws://localhost:7880');
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        setLocalStream(stream);
+        if (prejoinVideoRef.current) {
+          prejoinVideoRef.current.srcObject = stream;
+        }
+        setCameraEnabled(true);
+        setMicEnabled(true);
       } catch (err) {
-        setError(err.message);
+        console.error('Error accessing media devices:', err);
+        setError('Не удалось получить доступ к камере и микрофону');
       }
     };
-    fetchToken();
-  }, [roomId]);
+    getStream();
+    return () => {
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        setLocalStream(null);
+      }
+    };
+  }, [step]);
 
-  // Подключение к комнате
-  useEffect(() => {
-    // Если уже есть комната, не создаём новую
-    if (roomRef.current) {
-      console.log('Room already exists, skipping connect');
+  const togglePrejoinCamera = () => {
+    if (!localStream) return;
+    const videoTracks = localStream.getVideoTracks();
+    videoTracks.forEach(track => {
+      track.enabled = !cameraEnabled;
+    });
+    setCameraEnabled(!cameraEnabled);
+  };
+
+  const togglePrejoinMic = () => {
+    if (!localStream) return;
+    const audioTracks = localStream.getAudioTracks();
+    audioTracks.forEach(track => {
+      track.enabled = !micEnabled;
+    });
+    setMicEnabled(!micEnabled);
+  };
+
+  const joinRoom = async () => {
+    if (!userName.trim()) {
+      setError('Пожалуйста, введите имя');
       return;
     }
+    try {
+      const response = await fetch(
+        `${import.meta.env.VITE_API_URL || 'http://localhost:3000/api'}/rooms/${roomId}/token?name=${encodeURIComponent(userName.trim())}`
+      );
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Ошибка получения токена');
+      }
+      const data = await response.json();
+      setToken(data.token);
+      setWsUrl(data.wsUrl || 'ws://localhost:7880');
+      setStep('room');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
 
-    if (!token || !wsUrl) return;
+  // ===== Room connection (без cameraEnabled/micEnabled в зависимостях) =====
+  useEffect(() => {
+    if (step !== 'room' || !token || !wsUrl) return;
+    if (roomRef.current) return;
 
     const room = new Room({
       adaptiveStream: true,
@@ -53,11 +101,8 @@ const RoomPage = () => {
         resolution: { width: 640, height: 480 },
       },
     });
-
-    // Сохраняем ссылку до подключения, чтобы блокировать повторные вызовы
     roomRef.current = room;
 
-    // События
     room.on(RoomEvent.ParticipantConnected, (participant) => {
       setParticipants((prev) => [...prev, participant]);
     });
@@ -137,20 +182,18 @@ const RoomPage = () => {
 
     room.on(RoomEvent.Disconnected, () => {
       setIsConnected(false);
-      // Освобождаем ссылку при отключении
       roomRef.current = null;
     });
 
     const connect = async () => {
       try {
-        console.log('Attempting to connect to room:', roomId);
         await room.connect(wsUrl, token);
-        console.log('Connected to room:', roomId);
         setIsConnected(true);
 
+        // Включаем устройства с текущими настройками (из состояния)
         await room.localParticipant.enableCameraAndMicrophone();
-        setCameraEnabled(true);
-        setMicEnabled(true);
+        await room.localParticipant.setCameraEnabled(cameraEnabled);
+        await room.localParticipant.setMicrophoneEnabled(micEnabled);
 
         const localVid = localVideoRef.current;
         if (localVid) {
@@ -162,19 +205,16 @@ const RoomPage = () => {
             }
           }
         }
+        console.log('Connected to room');
       } catch (err) {
         console.error('Connection error:', err);
         setError(err.message);
-        // Сбрасываем ссылку при ошибке, чтобы можно было повторить попытку
-        if (roomRef.current === room) {
-          roomRef.current = null;
-        }
+        roomRef.current = null;
       }
     };
 
     connect();
 
-    // Cleanup при размонтировании компонента
     return () => {
       if (roomRef.current) {
         roomRef.current.disconnect();
@@ -189,9 +229,9 @@ const RoomPage = () => {
         localVideoRef.current.srcObject = null;
       }
     };
-  }, [token, wsUrl]);
+  }, [step, token, wsUrl]); // <- cameraEnabled и micEnabled УБРАНЫ из зависимостей
 
-  // Функции управления (оставляем без изменений)
+  // ===== Управление в звонке =====
   const toggleCamera = async () => {
     if (!roomRef.current) return;
     try {
@@ -214,124 +254,84 @@ const RoomPage = () => {
     }
   };
 
-  const copyLink = () => {
-    const link = window.location.href;
-    navigator.clipboard
-      .writeText(link)
-      .then(() => alert('Ссылка скопирована!'))
-      .catch(() => prompt('Скопируйте ссылку:', link));
-  };
-
   const leaveRoom = () => {
     if (roomRef.current) roomRef.current.disconnect();
     navigate('/');
   };
 
-  if (error) {
+  // ===== PreJoin view =====
+  if (step === 'prejoin') {
     return (
-      <div style={{ padding: '20px', textAlign: 'center' }}>
-        <h2>Ошибка</h2>
-        <p>{error}</p>
-        <button onClick={() => navigate('/')}>На главную</button>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#111', color: '#fff' }}>
+        <h2>Настройка перед звонком</h2>
+        <div style={{ marginBottom: '20px' }}>
+          <input
+            type="text"
+            placeholder="Ваше имя"
+            value={userName}
+            onChange={(e) => setUserName(e.target.value)}
+            style={{ padding: '8px', fontSize: '16px', borderRadius: '4px', border: '1px solid #ccc', background: '#222', color: '#fff' }}
+          />
+        </div>
+        <div style={{ position: 'relative', width: '320px', height: '240px', background: '#333', borderRadius: '8px', overflow: 'hidden', marginBottom: '20px' }}>
+          <video
+            ref={prejoinVideoRef}
+            autoPlay
+            playsInline
+            muted
+            style={{ width: '100%', height: '100%', transform: 'scaleX(-1)' }}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: '20px', marginBottom: '20px' }}>
+          <button onClick={togglePrejoinCamera} style={{ padding: '8px 16px', background: cameraEnabled ? '#4CAF50' : '#f44336', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
+            {cameraEnabled ? 'Выключить камеру' : 'Включить камеру'}
+          </button>
+          <button onClick={togglePrejoinMic} style={{ padding: '8px 16px', background: micEnabled ? '#4CAF50' : '#f44336', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
+            {micEnabled ? 'Выключить микрофон' : 'Включить микрофон'}
+          </button>
+        </div>
+        <button onClick={joinRoom} style={{ padding: '12px 24px', fontSize: '18px', background: '#007bff', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
+          Войти в звонок
+        </button>
+        {error && <p style={{ color: 'red', marginTop: '10px' }}>{error}</p>}
       </div>
     );
   }
 
+  // ===== Room view =====
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <div
-        style={{
-          padding: '12px',
-          background: '#1a1a1a',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-        }}
-      >
+      <div style={{ padding: '12px', background: '#1a1a1a', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>Комната: {roomId}</h3>
         <div>
-          <button onClick={copyLink} style={{ marginRight: '10px' }}>
+          <button onClick={() => { navigator.clipboard.writeText(window.location.href); alert('Ссылка скопирована!'); }} style={{ marginRight: '10px' }}>
             Поделиться ссылкой
           </button>
           <button onClick={leaveRoom}>Выйти</button>
         </div>
       </div>
 
-      <div
-        id="video-grid"
-        style={{
-          flex: 1,
-          display: 'flex',
-          flexWrap: 'wrap',
-          alignContent: 'flex-start',
-          padding: '10px',
-          gap: '10px',
-          background: '#222',
-          overflow: 'auto',
-        }}
-      >
+      <div id="video-grid" style={{ flex: 1, display: 'flex', flexWrap: 'wrap', alignContent: 'flex-start', padding: '10px', gap: '10px', background: '#222', overflow: 'auto' }}>
         <div style={{ position: 'relative', margin: '8px' }}>
           <video
             ref={localVideoRef}
             autoPlay
             playsInline
             muted
-            style={{
-              width: '200px',
-              height: '150px',
-              background: '#333',
-              borderRadius: '8px',
-              transform: 'scaleX(-1)',
-            }}
+            style={{ width: '200px', height: '150px', background: '#333', borderRadius: '8px', transform: 'scaleX(-1)' }}
           />
-          <span
-            style={{
-              position: 'absolute',
-              bottom: '4px',
-              left: '8px',
-              color: '#fff',
-              fontSize: '12px',
-            }}
-          >
-            Я
+          <span style={{ position: 'absolute', bottom: '4px', left: '8px', color: '#fff', fontSize: '12px' }}>
+            {userName || 'Я'}
           </span>
         </div>
+        {/* Удалённые видео добавляются динамически */}
       </div>
 
-      <div
-        style={{
-          padding: '12px',
-          background: '#1a1a1a',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          gap: '20px',
-        }}
-      >
-        <button
-          onClick={toggleCamera}
-          style={{
-            padding: '8px 16px',
-            background: cameraEnabled ? '#4CAF50' : '#f44336',
-            border: 'none',
-            borderRadius: '4px',
-            color: '#fff',
-            cursor: 'pointer',
-          }}
-        >
+      <div style={{ padding: '12px', background: '#1a1a1a', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '20px' }}>
+        <button onClick={toggleCamera} style={{ padding: '8px 16px', background: cameraEnabled ? '#4CAF50' : '#f44336', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
           {cameraEnabled ? 'Выключить камеру' : 'Включить камеру'}
         </button>
-        <button
-          onClick={toggleMic}
-          style={{
-            padding: '8px 16px',
-            background: micEnabled ? '#4CAF50' : '#f44336',
-            border: 'none',
-            borderRadius: '4px',
-            color: '#fff',
-            cursor: 'pointer',
-          }}
-        >
+        <button onClick={toggleMic} style={{ padding: '8px 16px', background: micEnabled ? '#4CAF50' : '#f44336', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
           {micEnabled ? 'Выключить микрофон' : 'Включить микрофон'}
         </button>
         <span style={{ color: '#aaa' }}>
