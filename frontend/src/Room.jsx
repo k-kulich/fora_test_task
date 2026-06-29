@@ -2,6 +2,57 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Room, RoomEvent, Track } from 'livekit-client';
 
+// ========== SVG иконки ==========
+const IconMic = ({ enabled }) => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+    <line x1="12" y1="19" x2="12" y2="23" />
+    <line x1="8" y1="23" x2="16" y2="23" />
+    {!enabled && <line x1="3" y1="3" x2="21" y2="21" />}
+  </svg>
+);
+
+const IconCamera = ({ enabled }) => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M23 7l-7 5 7 5V7z" />
+    <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+    {!enabled && <line x1="3" y1="3" x2="21" y2="21" />}
+  </svg>
+);
+
+const IconScreenShare = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+    <line x1="8" y1="21" x2="16" y2="21" />
+    <line x1="12" y1="17" x2="12" y2="21" />
+    <path d="M8 7l4 4 4-4" />
+  </svg>
+);
+
+const IconLeave = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <polyline points="16 17 21 12 16 7" />
+    <line x1="21" y1="12" x2="9" y2="12" />
+  </svg>
+);
+
+const IconSend = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="22" y1="2" x2="11" y2="13" />
+    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+  </svg>
+);
+
+const IconClose = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="18" y1="6" x2="6" y2="18" />
+    <line x1="6" y1="6" x2="18" y2="18" />
+  </svg>
+);
+
+// ========== Основной компонент ==========
 const RoomPage = () => {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -24,20 +75,25 @@ const RoomPage = () => {
 
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [screenShareParticipantSid, setScreenShareParticipantSid] = useState(null);
+  const [screenStream, setScreenStream] = useState(null);
 
-  // Для чата
   const [messages, setMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
 
+  const [showStatus, setShowStatus] = useState(false);
+
   const [prejoinVideoTrack, setPrejoinVideoTrack] = useState(null);
   const [prejoinAudioTrack, setPrejoinAudioTrack] = useState(null);
+
+  // Локальный поток камеры для отображения в комнате
+  const [localCameraStream, setLocalCameraStream] = useState(null);
 
   const roomRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteElements = useRef({});
   const prejoinVideoRef = useRef(null);
   const screenVideoRef = useRef(null);
-  const chatContainerRef = useRef(null); // для автоскролла
+  const chatContainerRef = useRef(null);
 
   // Сохраняем имя и настройки
   useEffect(() => {
@@ -59,6 +115,33 @@ const RoomPage = () => {
     }
   }, [messages]);
 
+  // Синхронизация локального видео с ref
+  useEffect(() => {
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = localCameraStream;
+    }
+  }, [localCameraStream]);
+
+  // Синхронизация экрана с ref
+  useEffect(() => {
+    if (screenVideoRef.current && screenStream) {
+      screenVideoRef.current.srcObject = screenStream;
+      screenVideoRef.current.muted = true;
+    }
+    if (screenVideoRef.current && !screenStream) {
+      screenVideoRef.current.srcObject = null;
+    }
+  }, [screenStream]);
+
+  // Показываем уведомление о статусе
+  useEffect(() => {
+    if (isConnected) {
+      setShowStatus(true);
+      const timer = setTimeout(() => setShowStatus(false), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [isConnected]);
+
   // ===== PreJoin =====
   useEffect(() => {
     if (step !== 'prejoin') return;
@@ -78,7 +161,7 @@ const RoomPage = () => {
         setMicEnabled(savedMic);
       } catch (err) {
         console.error('Error accessing media devices:', err);
-        setError('Не удалось получить доступ к камере и микрофону');
+        setError('Could not access camera and microphone');
       }
     };
     getStream();
@@ -136,7 +219,7 @@ const RoomPage = () => {
 
   const joinRoom = async () => {
     if (!userName.trim()) {
-      setError('Пожалуйста, введите имя');
+      setError('Please enter your name');
       return;
     }
     try {
@@ -145,7 +228,7 @@ const RoomPage = () => {
       );
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || 'Ошибка получения токена');
+        throw new Error(data.error || 'Failed to get token');
       }
       const data = await response.json();
       setToken(data.token);
@@ -184,9 +267,7 @@ const RoomPage = () => {
       }
       if (screenShareParticipantSid === participant.sid) {
         setScreenShareParticipantSid(null);
-        if (screenVideoRef.current) {
-          screenVideoRef.current.srcObject = null;
-        }
+        setScreenStream(null);
       }
     });
 
@@ -195,15 +276,23 @@ const RoomPage = () => {
       const sid = participant.sid;
 
       if (track.kind === 'video' && track.source === Track.Source.ScreenShare) {
+        if (isScreenSharing) {
+          console.log('We are already sharing, ignoring remote screen');
+          return;
+        }
         if (screenShareParticipantSid && screenShareParticipantSid !== sid) {
           console.log('Screen share already active, skipping');
           return;
         }
         setScreenShareParticipantSid(sid);
-        if (screenVideoRef.current) {
-          track.attach(screenVideoRef.current);
-          console.log('Screen share attached for participant', sid);
-        }
+        const attachScreen = () => {
+          if (screenVideoRef.current) {
+            track.attach(screenVideoRef.current);
+          } else {
+            setTimeout(attachScreen, 50);
+          }
+        };
+        attachScreen();
         return;
       }
 
@@ -225,22 +314,38 @@ const RoomPage = () => {
           vid.style.width = '200px';
           vid.style.height = '150px';
           vid.style.background = '#333';
-          vid.style.borderRadius = '8px';
+          vid.style.borderRadius = '12px';
+          // буква
+          const letterEl = document.createElement('div');
+          letterEl.style.position = 'absolute';
+          letterEl.style.top = '50%';
+          letterEl.style.left = '50%';
+          letterEl.style.transform = 'translate(-50%, -50%)';
+          letterEl.style.fontSize = '48px';
+          letterEl.style.fontWeight = '700';
+          letterEl.style.color = '#FA37DA';
+          letterEl.textContent = (participant.name || 'U')[0].toUpperCase();
+          wrapper.appendChild(letterEl);
+          // label
           const label = document.createElement('span');
           label.style.position = 'absolute';
           label.style.bottom = '4px';
           label.style.left = '8px';
           label.style.color = '#fff';
           label.style.fontSize = '12px';
-          label.textContent = participant.name || 'Участник';
+          label.textContent = participant.name || 'Participant';
           wrapper.appendChild(vid);
           wrapper.appendChild(label);
           container.appendChild(wrapper);
           remoteElements.current[sid].videoWrapper = wrapper;
           remoteElements.current[sid].videoEl = vid;
+          remoteElements.current[sid].letterEl = letterEl;
         }
         if (track) {
           track.attach(remoteElements.current[sid].videoEl);
+          if (remoteElements.current[sid].letterEl) {
+            remoteElements.current[sid].letterEl.style.display = 'none';
+          }
         }
       } else if (track.kind === 'audio') {
         if (!remoteElements.current[sid]) {
@@ -263,18 +368,19 @@ const RoomPage = () => {
       if (participant.isLocal) return;
       const sid = participant.sid;
       if (track.kind === 'video' && track.source === Track.Source.ScreenShare) {
-        console.log('Screen share track unsubscribed for participant', sid);
         setScreenShareParticipantSid(null);
+        setScreenStream(null);
         if (screenVideoRef.current) {
           screenVideoRef.current.srcObject = null;
         }
         return;
       }
       if (track.kind === 'video') {
-        const vid = remoteElements.current[sid]?.videoEl;
-        if (vid) {
-          track.detach(vid);
-          vid.srcObject = null;
+        const el = remoteElements.current[sid];
+        if (el && el.videoEl) {
+          track.detach(el.videoEl);
+          el.videoEl.srcObject = null;
+          if (el.letterEl) el.letterEl.style.display = 'block';
         }
       } else if (track.kind === 'audio') {
         const audioEl = remoteElements.current[sid]?.audioEl;
@@ -287,9 +393,10 @@ const RoomPage = () => {
       roomRef.current = null;
       setScreenShareParticipantSid(null);
       setIsScreenSharing(false);
+      setScreenStream(null);
     });
 
-    // Получение данных (чат)
+    // Чат
     room.on(RoomEvent.DataReceived, (payload, participant) => {
       try {
         const data = JSON.parse(new TextDecoder().decode(payload));
@@ -314,13 +421,9 @@ const RoomPage = () => {
           const stream = await navigator.mediaDevices.getUserMedia({ video: true });
           const track = stream.getVideoTracks()[0];
           await room.localParticipant.publishTrack(track, { source: Track.Source.Camera });
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = stream;
-          }
+          setLocalCameraStream(stream);
         } else {
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = null;
-          }
+          setLocalCameraStream(null);
         }
 
         if (micEnabled) {
@@ -354,14 +457,15 @@ const RoomPage = () => {
       if (screenVideoRef.current) {
         screenVideoRef.current.srcObject = null;
       }
+      setLocalCameraStream(null);
+      setScreenStream(null);
       setScreenShareParticipantSid(null);
       setIsScreenSharing(false);
-      // очищаем чат при выходе (опционально)
       setMessages([]);
     };
   }, [step, token, wsUrl]);
 
-  // ===== Отправка сообщения в чат =====
+  // ===== Отправка сообщения =====
   const sendChatMessage = async () => {
     if (!chatInput.trim() || !roomRef.current) return;
     const message = {
@@ -373,7 +477,6 @@ const RoomPage = () => {
       const encoder = new TextEncoder();
       const data = encoder.encode(JSON.stringify(message));
       await roomRef.current.localParticipant.publishData(data, { reliable: true });
-      // Добавляем сообщение сразу в локальный список
       setMessages((prev) => [...prev, {
         sender: message.sender,
         text: message.text,
@@ -390,7 +493,7 @@ const RoomPage = () => {
     if (!roomRef.current) return;
 
     if (screenShareParticipantSid && !isScreenSharing) {
-      alert('Кто-то уже демонстрирует экран');
+      alert('Someone is already sharing their screen');
       return;
     }
 
@@ -412,17 +515,14 @@ const RoomPage = () => {
       });
 
       setIsScreenSharing(true);
-      if (screenVideoRef.current) {
-        screenVideoRef.current.srcObject = stream;
-        screenVideoRef.current.muted = true;
-      }
+      setScreenStream(stream);
 
       track.onended = () => {
         stopScreenShare();
       };
     } catch (err) {
       console.error('Error starting screen share:', err);
-      alert('Не удалось начать демонстрацию экрана: ' + err.message);
+      alert('Could not start screen share: ' + err.message);
     }
   };
 
@@ -435,12 +535,13 @@ const RoomPage = () => {
     }
     setIsScreenSharing(false);
     setScreenShareParticipantSid(null);
+    setScreenStream(null);
     if (screenVideoRef.current) {
       screenVideoRef.current.srcObject = null;
     }
   };
 
-  // ===== Управление камерой и микрофоном в звонке =====
+  // ===== Управление камерой и микрофоном =====
   const toggleCamera = async () => {
     if (!roomRef.current) return;
     const participant = roomRef.current.localParticipant;
@@ -452,6 +553,7 @@ const RoomPage = () => {
           await participant.unpublishTrack(pub.track);
         }
         setCameraEnabled(false);
+        setLocalCameraStream(null);
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = null;
         }
@@ -460,11 +562,7 @@ const RoomPage = () => {
         const track = stream.getVideoTracks()[0];
         await participant.publishTrack(track, { source: Track.Source.Camera });
         setCameraEnabled(true);
-        if (localVideoRef.current) {
-          const newStream = new MediaStream();
-          newStream.addTrack(track);
-          localVideoRef.current.srcObject = newStream;
-        }
+        setLocalCameraStream(stream);
       }
     } catch (err) {
       console.error('Camera toggle error:', err);
@@ -501,162 +599,501 @@ const RoomPage = () => {
     navigate('/');
   };
 
+  const scrollGridLeft = () => {
+    const grid = document.getElementById('video-grid');
+    if (grid) grid.scrollBy({ left: -280, behavior: 'smooth' });
+  };
+
+  const scrollGridRight = () => {
+    const grid = document.getElementById('video-grid');
+    if (grid) grid.scrollBy({ left: 280, behavior: 'smooth' });
+  };
+
   // ===== PreJoin view =====
   if (step === 'prejoin') {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#111', color: '#fff' }}>
-        <h2>Настройка перед звонком</h2>
-        <div style={{ marginBottom: '20px' }}>
+      <div style={prejoinStyles.page}>
+        <div style={prejoinStyles.card}>
+          <h2 style={prejoinStyles.title}>Check your devices</h2>
+          <div style={prejoinStyles.videoWrapper}>
+            <video
+              ref={prejoinVideoRef}
+              autoPlay
+              playsInline
+              muted
+              style={prejoinStyles.video}
+            />
+          </div>
+          <div style={prejoinStyles.controls}>
+            <button onClick={togglePrejoinCamera} style={prejoinStyles.iconButton}>
+              <IconCamera enabled={cameraEnabled} />
+            </button>
+            <button onClick={togglePrejoinMic} style={prejoinStyles.iconButton}>
+              <IconMic enabled={micEnabled} />
+            </button>
+          </div>
           <input
             type="text"
-            placeholder="Ваше имя"
+            placeholder="Your name"
             value={userName}
             onChange={(e) => setUserName(e.target.value)}
-            style={{ padding: '8px', fontSize: '16px', borderRadius: '4px', border: '1px solid #ccc', background: '#222', color: '#fff' }}
+            style={prejoinStyles.input}
           />
-        </div>
-        <div style={{ position: 'relative', width: '320px', height: '240px', background: '#333', borderRadius: '8px', overflow: 'hidden', marginBottom: '20px' }}>
-          <video
-            ref={prejoinVideoRef}
-            autoPlay
-            playsInline
-            muted
-            style={{ width: '100%', height: '100%', transform: 'scaleX(-1)' }}
-          />
-        </div>
-        <div style={{ display: 'flex', gap: '20px', marginBottom: '20px' }}>
-          <button onClick={togglePrejoinCamera} style={{ padding: '8px 16px', background: cameraEnabled ? '#4CAF50' : '#f44336', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
-            {cameraEnabled ? 'Выключить камеру' : 'Включить камеру'}
+          <button onClick={joinRoom} style={prejoinStyles.joinButton}>
+            Join Call
           </button>
-          <button onClick={togglePrejoinMic} style={{ padding: '8px 16px', background: micEnabled ? '#4CAF50' : '#f44336', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
-            {micEnabled ? 'Выключить микрофон' : 'Включить микрофон'}
-          </button>
+          {error && <p style={prejoinStyles.error}>{error}</p>}
         </div>
-        <button onClick={joinRoom} style={{ padding: '12px 24px', fontSize: '18px', background: '#007bff', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
-          Войти в звонок
-        </button>
-        {error && <p style={{ color: 'red', marginTop: '10px' }}>{error}</p>}
       </div>
     );
   }
 
   // ===== Room view =====
+  const isScreenActive = screenShareParticipantSid || isScreenSharing;
+
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: '12px', background: '#1a1a1a', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h3 style={{ margin: 0 }}>Комната: {roomId}</h3>
-        <div>
-          <button onClick={() => { navigator.clipboard.writeText(window.location.href); alert('Ссылка скопирована!'); }} style={{ marginRight: '10px' }}>
-            Поделиться ссылкой
+    <div style={roomStyles.container}>
+      {showStatus && (
+        <div style={roomStyles.notification}>
+          <span>{isConnected ? '🟢 Connected' : '🔴 Disconnected'}</span>
+          <button onClick={() => setShowStatus(false)} style={roomStyles.closeNotif}>
+            <IconClose />
           </button>
-          <button onClick={leaveRoom}>Выйти</button>
         </div>
-      </div>
+      )}
 
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Основная область видео и экран */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ width: '100%', height: '300px', background: '#111', display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
-            <video
-              ref={screenVideoRef}
-              autoPlay
-              playsInline
-              style={{ maxWidth: '100%', maxHeight: '100%', background: '#222' }}
-            />
-            {!screenShareParticipantSid && !isScreenSharing && (
-              <span style={{ color: '#666', position: 'absolute' }}>Никто не делится экраном</span>
-            )}
-            {isScreenSharing && (
-              <span style={{ color: '#0f0', position: 'absolute', bottom: '10px', left: '10px', fontSize: '14px' }}>
-                Вы демонстрируете экран
-              </span>
-            )}
-            {screenShareParticipantSid && !isScreenSharing && (
-              <span style={{ color: '#ff0', position: 'absolute', bottom: '10px', left: '10px', fontSize: '14px' }}>
-                Демонстрация экрана
-              </span>
-            )}
-          </div>
-
-          <div id="video-grid" style={{ flex: 1, display: 'flex', flexWrap: 'wrap', alignContent: 'flex-start', padding: '10px', gap: '10px', background: '#222', overflow: 'auto' }}>
-            <div style={{ position: 'relative', margin: '8px' }}>
+      <div style={roomStyles.mainArea}>
+        {/* Видео-область */}
+        <div style={roomStyles.videoArea}>
+          {isScreenActive && (
+            <div style={roomStyles.screenContainer}>
               <video
-                ref={localVideoRef}
+                ref={screenVideoRef}
                 autoPlay
                 playsInline
-                muted
-                style={{ width: '200px', height: '150px', background: '#333', borderRadius: '8px', transform: 'scaleX(-1)' }}
+                style={roomStyles.screenVideo}
               />
-              <span style={{ position: 'absolute', bottom: '4px', left: '8px', color: '#fff', fontSize: '12px' }}>
-                {userName || 'Я'}
-              </span>
+              {isScreenSharing && <span style={roomStyles.screenLabel}>You are sharing</span>}
+              {screenShareParticipantSid && !isScreenSharing && (
+                <span style={roomStyles.screenLabel}>Screen share</span>
+              )}
             </div>
-            {/* Удалённые участники */}
+          )}
+
+          <div style={roomStyles.gridWrapper}>
+            <div id="video-grid" style={roomStyles.grid}>
+              {/* Локальное видео */}
+              <div style={roomStyles.participantTile}>
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  style={roomStyles.videoTile}
+                />
+                <span style={roomStyles.participantName}>{userName || 'You'}</span>
+              </div>
+              {/* Удалённые участники — добавляются динамически в video-grid */}
+            </div>
+            {isScreenActive && participants.length > 1 && (
+              <div style={roomStyles.carouselControls}>
+                <button style={roomStyles.carouselBtn} onClick={scrollGridLeft}>‹</button>
+                <button style={roomStyles.carouselBtn} onClick={scrollGridRight}>›</button>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Боковая панель чата */}
-        <div style={{ width: '300px', background: '#1a1a1a', display: 'flex', flexDirection: 'column', borderLeft: '1px solid #333' }}>
-          <div style={{ padding: '10px', background: '#222', borderBottom: '1px solid #333', fontWeight: 'bold', color: '#fff' }}>
-            Чат
-          </div>
-          <div ref={chatContainerRef} style={{ flex: 1, overflowY: 'auto', padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        {/* Чат */}
+        <div style={roomStyles.chatPanel}>
+          <div style={roomStyles.chatHeader}>Chat</div>
+          <div ref={chatContainerRef} style={roomStyles.chatMessages}>
             {messages.length === 0 && (
-              <span style={{ color: '#666', textAlign: 'center', marginTop: '20px' }}>Нет сообщений</span>
+              <div style={roomStyles.emptyChat}>No messages yet</div>
             )}
             {messages.map((msg, idx) => (
-              <div key={idx} style={{ background: '#333', padding: '6px 10px', borderRadius: '4px', fontSize: '14px' }}>
-                <strong style={{ color: '#4CAF50' }}>{msg.sender}:</strong> {msg.text}
+              <div key={idx} style={roomStyles.chatMessage}>
+                <strong style={roomStyles.chatSender}>{msg.sender}:</strong> {msg.text}
               </div>
             ))}
           </div>
-          <div style={{ padding: '10px', borderTop: '1px solid #333', display: 'flex', gap: '8px' }}>
+          <div style={roomStyles.chatInputRow}>
             <input
               type="text"
-              placeholder="Введите сообщение..."
+              placeholder="Type a message..."
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && sendChatMessage()}
-              style={{ flex: 1, padding: '8px', borderRadius: '4px', border: '1px solid #444', background: '#222', color: '#fff' }}
+              style={roomStyles.chatInput}
             />
-            <button onClick={sendChatMessage} style={{ padding: '8px 16px', background: '#007bff', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
-              Отправить
+            <button onClick={sendChatMessage} style={roomStyles.sendButton}>
+              <IconSend />
             </button>
           </div>
         </div>
       </div>
 
-      {/* Нижняя панель управления */}
-      <div style={{ padding: '12px', background: '#1a1a1a', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '20px', flexWrap: 'wrap' }}>
-        <button onClick={toggleCamera} style={{ padding: '8px 16px', background: cameraEnabled ? '#4CAF50' : '#f44336', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
-          {cameraEnabled ? 'Выключить камеру' : 'Включить камеру'}
+      {/* Нижняя панель */}
+      <div style={roomStyles.controlsBar}>
+        <button onClick={toggleCamera} style={roomStyles.controlButton}>
+          <IconCamera enabled={cameraEnabled} />
         </button>
-        <button onClick={toggleMic} style={{ padding: '8px 16px', background: micEnabled ? '#4CAF50' : '#f44336', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
-          {micEnabled ? 'Выключить микрофон' : 'Включить микрофон'}
+        <button onClick={toggleMic} style={roomStyles.controlButton}>
+          <IconMic enabled={micEnabled} />
         </button>
         <button
           onClick={toggleScreenShare}
           disabled={!!screenShareParticipantSid && !isScreenSharing}
           style={{
-            padding: '8px 16px',
-            background: isScreenSharing ? '#f44336' : (screenShareParticipantSid ? '#888' : '#4CAF50'),
-            border: 'none',
-            borderRadius: '4px',
-            color: '#fff',
+            ...roomStyles.controlButton,
+            ...(isScreenSharing ? roomStyles.controlButtonActive : {}),
+            opacity: (screenShareParticipantSid && !isScreenSharing) ? 0.4 : 1,
             cursor: (screenShareParticipantSid && !isScreenSharing) ? 'not-allowed' : 'pointer',
           }}
         >
-          {isScreenSharing ? 'Остановить экран' : (screenShareParticipantSid ? 'Экран занят' : 'Поделиться экраном')}
+          <IconScreenShare />
         </button>
-        <span style={{ color: '#aaa' }}>
-          {isConnected ? '🟢 Подключено' : '🔴 Подключение...'}
-        </span>
-        <span style={{ color: '#aaa', marginLeft: '20px' }}>
-          Участников: {participants.length + 1}
-        </span>
+        <button onClick={leaveRoom} style={{ ...roomStyles.controlButton, background: '#ff4444' }}>
+          <IconLeave />
+        </button>
       </div>
     </div>
   );
+};
+
+// ===== Стили =====
+const prejoinStyles = {
+  page: {
+    minHeight: '100vh',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: '#000',
+    fontFamily: "'Inter', sans-serif",
+    padding: '20px',
+  },
+  card: {
+    background: 'linear-gradient(#000, #000) padding-box, radial-gradient(circle at 20% 30%, #FA37DA, #4C37FA) border-box',
+    border: '2px solid transparent',
+    borderRadius: '40px',
+    padding: '40px 32px',
+    maxWidth: '420px',
+    width: '100%',
+    textAlign: 'center',
+    boxShadow: '0 20px 40px rgba(250,55,218,0.25), 0 0 0 1px rgba(76,55,250,0.2)',
+  },
+  title: {
+    fontSize: '24px',
+    fontWeight: 700,
+    color: '#fff',
+    marginBottom: '24px',
+  },
+  videoWrapper: {
+    width: '100%',
+    aspectRatio: '4/3',
+    background: '#222',
+    borderRadius: '20px',
+    overflow: 'hidden',
+    marginBottom: '20px',
+  },
+  video: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    transform: 'scaleX(-1)',
+  },
+  controls: {
+    display: 'flex',
+    justifyContent: 'center',
+    gap: '20px',
+    marginBottom: '24px',
+  },
+  iconButton: {
+    background: 'rgba(255,255,255,0.08)',
+    border: '1px solid rgba(250,55,218,0.4)',
+    borderRadius: '50%',
+    width: '48px',
+    height: '48px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: '#fff',
+    cursor: 'pointer',
+    transition: '0.2s',
+  },
+  input: {
+    width: '100%',
+    padding: '14px 20px',
+    borderRadius: '60px',
+    border: '1px solid rgba(250,55,218,0.4)',
+    background: 'rgba(255,255,255,0.05)',
+    color: '#fff',
+    fontSize: '16px',
+    outline: 'none',
+    marginBottom: '20px',
+    fontFamily: 'inherit',
+  },
+  joinButton: {
+    width: '100%',
+    padding: '14px',
+    borderRadius: '60px',
+    border: 'none',
+    background: 'linear-gradient(95deg, #FA37DA, #4C37FA)',
+    color: '#fff',
+    fontSize: '18px',
+    fontWeight: 600,
+    cursor: 'pointer',
+    transition: '0.2s',
+    boxShadow: '0 4px 12px rgba(76,55,250,0.3)',
+    fontFamily: 'inherit',
+  },
+  error: {
+    color: '#ff6b6b',
+    fontSize: '14px',
+    marginTop: '12px',
+  },
+};
+
+const roomStyles = {
+  container: {
+    height: '100vh',
+    display: 'flex',
+    flexDirection: 'column',
+    background: '#111',
+    fontFamily: "'Inter', sans-serif",
+    position: 'relative',
+  },
+  notification: {
+    position: 'fixed',
+    top: '20px',
+    right: '20px',
+    background: 'rgba(0,0,0,0.85)',
+    backdropFilter: 'blur(8px)',
+    border: '1px solid rgba(250,55,218,0.3)',
+    borderRadius: '40px',
+    padding: '10px 20px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    color: '#fff',
+    fontSize: '14px',
+    zIndex: 100,
+    boxShadow: '0 8px 20px rgba(0,0,0,0.5)',
+  },
+  closeNotif: {
+    background: 'none',
+    border: 'none',
+    color: '#aaa',
+    cursor: 'pointer',
+    padding: '0',
+    display: 'flex',
+  },
+  mainArea: {
+    flex: 1,
+    display: 'flex',
+    overflow: 'hidden',
+    padding: '16px',
+    gap: '16px',
+  },
+  videoArea: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    minWidth: 0,
+  },
+  screenContainer: {
+    width: '100%',
+    height: '300px',
+    background: '#222',
+    borderRadius: '20px',
+    overflow: 'hidden',
+    position: 'relative',
+    flexShrink: 0,
+  },
+  screenVideo: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain',
+    background: '#111',
+  },
+  screenLabel: {
+    position: 'absolute',
+    bottom: '12px',
+    left: '16px',
+    color: '#fff',
+    fontSize: '14px',
+    background: 'rgba(0,0,0,0.6)',
+    padding: '4px 12px',
+    borderRadius: '20px',
+  },
+  gridWrapper: {
+    flex: 1,
+    position: 'relative',
+    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  grid: {
+    display: 'flex',
+    flexWrap: 'nowrap',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '8px 16px',
+    overflowX: 'auto',
+    scrollBehavior: 'smooth',
+    height: '100%',
+    minHeight: '150px',
+  },
+  participantTile: {
+    position: 'relative',
+    width: '200px',
+    height: '150px',
+    background: '#333',
+    borderRadius: '16px',
+    overflow: 'hidden',
+    flexShrink: 0,
+  },
+  videoTile: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    background: '#222',
+    transform: 'scaleX(-1)',
+  },
+  participantName: {
+    position: 'absolute',
+    bottom: '6px',
+    left: '10px',
+    color: '#fff',
+    fontSize: '13px',
+    textShadow: '0 1px 4px rgba(0,0,0,0.8)',
+  },
+  chatPanel: {
+    width: '280px',
+    background: '#1a1a1a',
+    borderRadius: '24px',
+    display: 'flex',
+    flexDirection: 'column',
+    border: '1px solid rgba(250,55,218,0.15)',
+    flexShrink: 0,
+  },
+  chatHeader: {
+    padding: '14px 18px',
+    fontWeight: 600,
+    color: '#fff',
+    borderBottom: '1px solid rgba(255,255,255,0.05)',
+  },
+  chatMessages: {
+    flex: 1,
+    overflowY: 'auto',
+    padding: '12px 16px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+  },
+  emptyChat: {
+    color: '#666',
+    textAlign: 'center',
+    marginTop: '30px',
+    fontSize: '14px',
+  },
+  chatMessage: {
+    background: 'rgba(255,255,255,0.05)',
+    padding: '6px 12px',
+    borderRadius: '12px',
+    fontSize: '14px',
+    color: '#eee',
+    wordBreak: 'break-word',
+  },
+  chatSender: {
+    color: '#FA37DA',
+    marginRight: '4px',
+  },
+  chatInputRow: {
+    display: 'flex',
+    padding: '12px 16px',
+    borderTop: '1px solid rgba(255,255,255,0.05)',
+    gap: '8px',
+  },
+  chatInput: {
+    flex: 1,
+    padding: '10px 16px',
+    borderRadius: '40px',
+    border: '1px solid rgba(250,55,218,0.3)',
+    background: 'rgba(255,255,255,0.05)',
+    color: '#fff',
+    fontSize: '14px',
+    outline: 'none',
+    fontFamily: 'inherit',
+  },
+  sendButton: {
+    background: 'linear-gradient(95deg, #FA37DA, #4C37FA)',
+    border: 'none',
+    borderRadius: '50%',
+    width: '40px',
+    height: '40px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: '#fff',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  controlsBar: {
+    display: 'flex',
+    justifyContent: 'center',
+    gap: '24px',
+    padding: '16px 24px',
+    background: 'rgba(0,0,0,0.7)',
+    backdropFilter: 'blur(8px)',
+    borderTop: '1px solid rgba(250,55,218,0.1)',
+  },
+  controlButton: {
+    background: 'rgba(255,255,255,0.08)',
+    border: '1px solid rgba(250,55,218,0.3)',
+    borderRadius: '50%',
+    width: '52px',
+    height: '52px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: '#fff',
+    cursor: 'pointer',
+    transition: '0.2s',
+  },
+  controlButtonActive: {
+    background: 'rgba(250,55,218,0.3)',
+    borderColor: '#FA37DA',
+  },
+  carouselControls: {
+    position: 'absolute',
+    top: '50%',
+    left: 0,
+    right: 0,
+    transform: 'translateY(-50%)',
+    display: 'flex',
+    justifyContent: 'space-between',
+    padding: '0 8px',
+    pointerEvents: 'none',
+  },
+  carouselBtn: {
+    background: 'rgba(0,0,0,0.7)',
+    border: '1px solid rgba(250,55,218,0.4)',
+    borderRadius: '50%',
+    width: '36px',
+    height: '36px',
+    color: '#fff',
+    fontSize: '24px',
+    cursor: 'pointer',
+    pointerEvents: 'auto',
+    backdropFilter: 'blur(4px)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transition: '0.2s',
+  },
 };
 
 export default RoomPage;
