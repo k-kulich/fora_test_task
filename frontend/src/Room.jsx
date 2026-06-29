@@ -17,7 +17,6 @@ const RoomPage = () => {
   const roomRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteElements = useRef({});
-  const hasConnectedRef = useRef(false); // флаг, чтобы подключиться только раз
 
   // Получение токена
   useEffect(() => {
@@ -37,10 +36,15 @@ const RoomPage = () => {
     fetchToken();
   }, [roomId]);
 
-  // Подключение к комнате (только один раз при наличии token и wsUrl)
+  // Подключение к комнате
   useEffect(() => {
-    if (!token || !wsUrl || hasConnectedRef.current) return;
-    hasConnectedRef.current = true;
+    // Если уже есть комната, не создаём новую
+    if (roomRef.current) {
+      console.log('Room already exists, skipping connect');
+      return;
+    }
+
+    if (!token || !wsUrl) return;
 
     const room = new Room({
       adaptiveStream: true,
@@ -49,6 +53,8 @@ const RoomPage = () => {
         resolution: { width: 640, height: 480 },
       },
     });
+
+    // Сохраняем ссылку до подключения, чтобы блокировать повторные вызовы
     roomRef.current = room;
 
     // События
@@ -131,11 +137,15 @@ const RoomPage = () => {
 
     room.on(RoomEvent.Disconnected, () => {
       setIsConnected(false);
+      // Освобождаем ссылку при отключении
+      roomRef.current = null;
     });
 
     const connect = async () => {
       try {
+        console.log('Attempting to connect to room:', roomId);
         await room.connect(wsUrl, token);
+        console.log('Connected to room:', roomId);
         setIsConnected(true);
 
         await room.localParticipant.enableCameraAndMicrophone();
@@ -152,12 +162,13 @@ const RoomPage = () => {
             }
           }
         }
-
-        console.log('Connected to room');
       } catch (err) {
         console.error('Connection error:', err);
         setError(err.message);
-        hasConnectedRef.current = false; // разрешаем повторную попытку
+        // Сбрасываем ссылку при ошибке, чтобы можно было повторить попытку
+        if (roomRef.current === room) {
+          roomRef.current = null;
+        }
       }
     };
 
@@ -177,11 +188,10 @@ const RoomPage = () => {
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = null;
       }
-      hasConnectedRef.current = false;
     };
-  }, [token, wsUrl]); // зависимости остаются, но благодаря флагу эффект выполнится только один раз
+  }, [token, wsUrl]);
 
-  // Функции управления
+  // Функции управления (оставляем без изменений)
   const toggleCamera = async () => {
     if (!roomRef.current) return;
     try {
