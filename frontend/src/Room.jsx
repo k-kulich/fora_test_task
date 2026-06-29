@@ -25,7 +25,10 @@ const RoomPage = () => {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [screenShareParticipantSid, setScreenShareParticipantSid] = useState(null);
 
-  // Для prejoin храним треки отдельно
+  // Для чата
+  const [messages, setMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+
   const [prejoinVideoTrack, setPrejoinVideoTrack] = useState(null);
   const [prejoinAudioTrack, setPrejoinAudioTrack] = useState(null);
 
@@ -34,6 +37,7 @@ const RoomPage = () => {
   const remoteElements = useRef({});
   const prejoinVideoRef = useRef(null);
   const screenVideoRef = useRef(null);
+  const chatContainerRef = useRef(null); // для автоскролла
 
   // Сохраняем имя и настройки
   useEffect(() => {
@@ -48,6 +52,13 @@ const RoomPage = () => {
     sessionStorage.setItem(`micEnabled_${roomId}`, micEnabled);
   }, [micEnabled, roomId]);
 
+  // Автоскролл чата
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  }, [messages]);
+
   // ===== PreJoin =====
   useEffect(() => {
     if (step !== 'prejoin') return;
@@ -61,7 +72,6 @@ const RoomPage = () => {
         if (prejoinVideoRef.current) {
           prejoinVideoRef.current.srcObject = stream;
         }
-        // Применяем сохранённые настройки
         if (!savedCamera) videoTrack.enabled = false;
         if (!savedMic) audioTrack.enabled = false;
         setCameraEnabled(savedCamera);
@@ -90,7 +100,6 @@ const RoomPage = () => {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         const newTrack = stream.getVideoTracks()[0];
         setPrejoinVideoTrack(newTrack);
-        // Обновляем отображение
         const combined = new MediaStream();
         if (prejoinAudioTrack) combined.addTrack(prejoinAudioTrack);
         combined.addTrack(newTrack);
@@ -230,7 +239,9 @@ const RoomPage = () => {
           remoteElements.current[sid].videoWrapper = wrapper;
           remoteElements.current[sid].videoEl = vid;
         }
-        track.attach(remoteElements.current[sid].videoEl);
+        if (track) {
+          track.attach(remoteElements.current[sid].videoEl);
+        }
       } else if (track.kind === 'audio') {
         if (!remoteElements.current[sid]) {
           remoteElements.current[sid] = {};
@@ -261,7 +272,10 @@ const RoomPage = () => {
       }
       if (track.kind === 'video') {
         const vid = remoteElements.current[sid]?.videoEl;
-        if (vid) track.detach(vid);
+        if (vid) {
+          track.detach(vid);
+          vid.srcObject = null;
+        }
       } else if (track.kind === 'audio') {
         const audioEl = remoteElements.current[sid]?.audioEl;
         if (audioEl) track.detach(audioEl);
@@ -275,12 +289,27 @@ const RoomPage = () => {
       setIsScreenSharing(false);
     });
 
+    // Получение данных (чат)
+    room.on(RoomEvent.DataReceived, (payload, participant) => {
+      try {
+        const data = JSON.parse(new TextDecoder().decode(payload));
+        if (data.type === 'chat') {
+          setMessages((prev) => [...prev, {
+            sender: data.sender || participant.name || 'Unknown',
+            text: data.text,
+            timestamp: Date.now()
+          }]);
+        }
+      } catch (e) {
+        console.error('Error parsing chat message:', e);
+      }
+    });
+
     const connect = async () => {
       try {
         await room.connect(wsUrl, token);
         setIsConnected(true);
 
-        // Публикуем камеру и микрофон в зависимости от состояния
         if (cameraEnabled) {
           const stream = await navigator.mediaDevices.getUserMedia({ video: true });
           const track = stream.getVideoTracks()[0];
@@ -289,7 +318,6 @@ const RoomPage = () => {
             localVideoRef.current.srcObject = stream;
           }
         } else {
-          // Если камера выключена, то локальное видео должно быть чёрным
           if (localVideoRef.current) {
             localVideoRef.current.srcObject = null;
           }
@@ -328,8 +356,34 @@ const RoomPage = () => {
       }
       setScreenShareParticipantSid(null);
       setIsScreenSharing(false);
+      // очищаем чат при выходе (опционально)
+      setMessages([]);
     };
   }, [step, token, wsUrl]);
+
+  // ===== Отправка сообщения в чат =====
+  const sendChatMessage = async () => {
+    if (!chatInput.trim() || !roomRef.current) return;
+    const message = {
+      type: 'chat',
+      sender: userName || 'Anonymous',
+      text: chatInput.trim()
+    };
+    try {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(JSON.stringify(message));
+      await roomRef.current.localParticipant.publishData(data, { reliable: true });
+      // Добавляем сообщение сразу в локальный список
+      setMessages((prev) => [...prev, {
+        sender: message.sender,
+        text: message.text,
+        timestamp: Date.now()
+      }]);
+      setChatInput('');
+    } catch (err) {
+      console.error('Error sending chat message:', err);
+    }
+  };
 
   // ===== Демонстрация экрана =====
   const toggleScreenShare = async () => {
@@ -345,7 +399,6 @@ const RoomPage = () => {
       return;
     }
 
-    // Начать демонстрацию
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
       const track = stream.getVideoTracks()[0];
@@ -377,7 +430,7 @@ const RoomPage = () => {
     if (!roomRef.current) return;
     const pub = roomRef.current.localParticipant.getTrackPublication(Track.Source.ScreenShare);
     if (pub && pub.track) {
-      pub.track.stop(); // физически останавливаем захват
+      pub.track.stop();
       await roomRef.current.localParticipant.unpublishTrack(pub.track);
     }
     setIsScreenSharing(false);
@@ -393,7 +446,6 @@ const RoomPage = () => {
     const participant = roomRef.current.localParticipant;
     try {
       if (cameraEnabled) {
-        // Выключаем камеру
         const pub = participant.getTrackPublication(Track.Source.Camera);
         if (pub && pub.track) {
           pub.track.stop();
@@ -404,13 +456,11 @@ const RoomPage = () => {
           localVideoRef.current.srcObject = null;
         }
       } else {
-        // Включаем камеру
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         const track = stream.getVideoTracks()[0];
         await participant.publishTrack(track, { source: Track.Source.Camera });
         setCameraEnabled(true);
         if (localVideoRef.current) {
-          // Создаём новый MediaStream с этим треком, чтобы отобразить локальное видео
           const newStream = new MediaStream();
           newStream.addTrack(track);
           localVideoRef.current.srcObject = newStream;
@@ -503,43 +553,80 @@ const RoomPage = () => {
         </div>
       </div>
 
-      <div style={{ width: '100%', height: '300px', background: '#111', display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
-        <video
-          ref={screenVideoRef}
-          autoPlay
-          playsInline
-          style={{ maxWidth: '100%', maxHeight: '100%', background: '#222' }}
-        />
-        {!screenShareParticipantSid && !isScreenSharing && (
-          <span style={{ color: '#666', position: 'absolute' }}>Никто не делится экраном</span>
-        )}
-        {isScreenSharing && (
-          <span style={{ color: '#0f0', position: 'absolute', bottom: '10px', left: '10px', fontSize: '14px' }}>
-            Вы демонстрируете экран
-          </span>
-        )}
-        {screenShareParticipantSid && !isScreenSharing && (
-          <span style={{ color: '#ff0', position: 'absolute', bottom: '10px', left: '10px', fontSize: '14px' }}>
-            Демонстрация экрана
-          </span>
-        )}
-      </div>
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+        {/* Основная область видео и экран */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ width: '100%', height: '300px', background: '#111', display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
+            <video
+              ref={screenVideoRef}
+              autoPlay
+              playsInline
+              style={{ maxWidth: '100%', maxHeight: '100%', background: '#222' }}
+            />
+            {!screenShareParticipantSid && !isScreenSharing && (
+              <span style={{ color: '#666', position: 'absolute' }}>Никто не делится экраном</span>
+            )}
+            {isScreenSharing && (
+              <span style={{ color: '#0f0', position: 'absolute', bottom: '10px', left: '10px', fontSize: '14px' }}>
+                Вы демонстрируете экран
+              </span>
+            )}
+            {screenShareParticipantSid && !isScreenSharing && (
+              <span style={{ color: '#ff0', position: 'absolute', bottom: '10px', left: '10px', fontSize: '14px' }}>
+                Демонстрация экрана
+              </span>
+            )}
+          </div>
 
-      <div id="video-grid" style={{ flex: 1, display: 'flex', flexWrap: 'wrap', alignContent: 'flex-start', padding: '10px', gap: '10px', background: '#222', overflow: 'auto' }}>
-        <div style={{ position: 'relative', margin: '8px' }}>
-          <video
-            ref={localVideoRef}
-            autoPlay
-            playsInline
-            muted
-            style={{ width: '200px', height: '150px', background: '#333', borderRadius: '8px', transform: 'scaleX(-1)' }}
-          />
-          <span style={{ position: 'absolute', bottom: '4px', left: '8px', color: '#fff', fontSize: '12px' }}>
-            {userName || 'Я'}
-          </span>
+          <div id="video-grid" style={{ flex: 1, display: 'flex', flexWrap: 'wrap', alignContent: 'flex-start', padding: '10px', gap: '10px', background: '#222', overflow: 'auto' }}>
+            <div style={{ position: 'relative', margin: '8px' }}>
+              <video
+                ref={localVideoRef}
+                autoPlay
+                playsInline
+                muted
+                style={{ width: '200px', height: '150px', background: '#333', borderRadius: '8px', transform: 'scaleX(-1)' }}
+              />
+              <span style={{ position: 'absolute', bottom: '4px', left: '8px', color: '#fff', fontSize: '12px' }}>
+                {userName || 'Я'}
+              </span>
+            </div>
+            {/* Удалённые участники */}
+          </div>
+        </div>
+
+        {/* Боковая панель чата */}
+        <div style={{ width: '300px', background: '#1a1a1a', display: 'flex', flexDirection: 'column', borderLeft: '1px solid #333' }}>
+          <div style={{ padding: '10px', background: '#222', borderBottom: '1px solid #333', fontWeight: 'bold', color: '#fff' }}>
+            Чат
+          </div>
+          <div ref={chatContainerRef} style={{ flex: 1, overflowY: 'auto', padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {messages.length === 0 && (
+              <span style={{ color: '#666', textAlign: 'center', marginTop: '20px' }}>Нет сообщений</span>
+            )}
+            {messages.map((msg, idx) => (
+              <div key={idx} style={{ background: '#333', padding: '6px 10px', borderRadius: '4px', fontSize: '14px' }}>
+                <strong style={{ color: '#4CAF50' }}>{msg.sender}:</strong> {msg.text}
+              </div>
+            ))}
+          </div>
+          <div style={{ padding: '10px', borderTop: '1px solid #333', display: 'flex', gap: '8px' }}>
+            <input
+              type="text"
+              placeholder="Введите сообщение..."
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && sendChatMessage()}
+              style={{ flex: 1, padding: '8px', borderRadius: '4px', border: '1px solid #444', background: '#222', color: '#fff' }}
+            />
+            <button onClick={sendChatMessage} style={{ padding: '8px 16px', background: '#007bff', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
+              Отправить
+            </button>
+          </div>
         </div>
       </div>
 
+      {/* Нижняя панель управления */}
       <div style={{ padding: '12px', background: '#1a1a1a', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '20px', flexWrap: 'wrap' }}>
         <button onClick={toggleCamera} style={{ padding: '8px 16px', background: cameraEnabled ? '#4CAF50' : '#f44336', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer' }}>
           {cameraEnabled ? 'Выключить камеру' : 'Включить камеру'}
