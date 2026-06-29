@@ -89,7 +89,7 @@ const RoomPage = () => {
     }
   };
 
-  // ===== Room connection (без cameraEnabled/micEnabled в зависимостях) =====
+  // ===== Room connection =====
   useEffect(() => {
     if (step !== 'room' || !token || !wsUrl) return;
     if (roomRef.current) return;
@@ -146,7 +146,8 @@ const RoomPage = () => {
           label.style.left = '8px';
           label.style.color = '#fff';
           label.style.fontSize = '12px';
-          label.textContent = participant.identity || 'Участник';
+          // 👇 ИСПРАВЛЕНИЕ: показываем participant.name вместо identity
+          label.textContent = participant.name || 'Участник';
           wrapper.appendChild(vid);
           wrapper.appendChild(label);
           container.appendChild(wrapper);
@@ -190,7 +191,6 @@ const RoomPage = () => {
         await room.connect(wsUrl, token);
         setIsConnected(true);
 
-        // Включаем устройства с текущими настройками (из состояния)
         await room.localParticipant.enableCameraAndMicrophone();
         await room.localParticipant.setCameraEnabled(cameraEnabled);
         await room.localParticipant.setMicrophoneEnabled(micEnabled);
@@ -229,7 +229,7 @@ const RoomPage = () => {
         localVideoRef.current.srcObject = null;
       }
     };
-  }, [step, token, wsUrl]); // <- cameraEnabled и micEnabled УБРАНЫ из зависимостей
+  }, [step, token, wsUrl]);
 
   // ===== Управление в звонке =====
   const toggleCamera = async () => {
@@ -324,7 +324,6 @@ const RoomPage = () => {
             {userName || 'Я'}
           </span>
         </div>
-        {/* Удалённые видео добавляются динамически */}
       </div>
 
       <div style={{ padding: '12px', background: '#1a1a1a', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '20px' }}>
