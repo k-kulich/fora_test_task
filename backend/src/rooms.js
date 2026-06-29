@@ -1,13 +1,15 @@
 const { nanoid } = require('nanoid');
 
-// In-memory store: roomId -> { createdAt, participants? }
 const rooms = new Map();
 
 function generateRoomId() {
-  return nanoid(10); // например "abc123xyz"
+  return nanoid(10);
 }
 
 function createRoom(roomId) {
+  if (rooms.has(roomId)) {
+    throw new Error('Room already exists');
+  }
   rooms.set(roomId, { createdAt: Date.now() });
   return roomId;
 }

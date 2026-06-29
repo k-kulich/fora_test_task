@@ -16,8 +16,8 @@ const RoomPage = () => {
 
   const roomRef = useRef(null);
   const localVideoRef = useRef(null);
-  // Храним ссылки на элементы (видео и аудио) для удалённых участников
   const remoteElements = useRef({});
+  const hasConnectedRef = useRef(false); // флаг, чтобы подключиться только раз
 
   // Получение токена
   useEffect(() => {
@@ -37,9 +37,10 @@ const RoomPage = () => {
     fetchToken();
   }, [roomId]);
 
-  // Подключение к комнате
+  // Подключение к комнате (только один раз при наличии token и wsUrl)
   useEffect(() => {
-    if (!token || !wsUrl) return;
+    if (!token || !wsUrl || hasConnectedRef.current) return;
+    hasConnectedRef.current = true;
 
     const room = new Room({
       adaptiveStream: true,
@@ -57,7 +58,6 @@ const RoomPage = () => {
 
     room.on(RoomEvent.ParticipantDisconnected, (participant) => {
       setParticipants((prev) => prev.filter((p) => p.sid !== participant.sid));
-      // Удаляем DOM-элементы этого участника
       const el = remoteElements.current[participant.sid];
       if (el) {
         if (el.videoWrapper) el.videoWrapper.remove();
@@ -67,20 +67,15 @@ const RoomPage = () => {
     });
 
     room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
-      // Для локального участника не создаём удалённые элементы
       if (participant.isLocal) return;
-
       const sid = participant.sid;
-      // Создаём структуру для хранения элементов, если её нет
       if (!remoteElements.current[sid]) {
         remoteElements.current[sid] = {};
       }
 
       if (track.kind === 'video') {
-        // Создаём видео-элемент
         const container = document.getElementById('video-grid');
         if (!container) return;
-        // Проверим, не существует ли уже видео-обёртка
         let wrapper = remoteElements.current[sid].videoWrapper;
         if (!wrapper) {
           wrapper = document.createElement('div');
@@ -107,10 +102,8 @@ const RoomPage = () => {
           remoteElements.current[sid].videoWrapper = wrapper;
           remoteElements.current[sid].videoEl = vid;
         }
-        // Прикрепляем трек к видео
         track.attach(remoteElements.current[sid].videoEl);
       } else if (track.kind === 'audio') {
-        // Создаём скрытый аудио-элемент
         let audioEl = remoteElements.current[sid].audioEl;
         if (!audioEl) {
           audioEl = document.createElement('audio');
@@ -120,6 +113,7 @@ const RoomPage = () => {
           remoteElements.current[sid].audioEl = audioEl;
         }
         track.attach(audioEl);
+        audioEl.play().catch(err => console.warn('Audio play error:', err));
       }
     });
 
@@ -131,10 +125,7 @@ const RoomPage = () => {
         if (vid) track.detach(vid);
       } else if (track.kind === 'audio') {
         const audioEl = remoteElements.current[sid]?.audioEl;
-        if (audioEl) {
-          track.detach(audioEl);
-          // Можно удалить аудио-элемент, но оставим, чтобы не пересоздавать при повторном подключении
-        }
+        if (audioEl) track.detach(audioEl);
       }
     });
 
@@ -147,12 +138,10 @@ const RoomPage = () => {
         await room.connect(wsUrl, token);
         setIsConnected(true);
 
-        // Включаем камеру и микрофон
         await room.localParticipant.enableCameraAndMicrophone();
         setCameraEnabled(true);
         setMicEnabled(true);
 
-        // Прикрепляем локальное видео
         const localVid = localVideoRef.current;
         if (localVid) {
           const videoTracks = room.localParticipant.videoTrackPublications;
@@ -168,14 +157,18 @@ const RoomPage = () => {
       } catch (err) {
         console.error('Connection error:', err);
         setError(err.message);
+        hasConnectedRef.current = false; // разрешаем повторную попытку
       }
     };
 
     connect();
 
+    // Cleanup при размонтировании компонента
     return () => {
-      room.disconnect();
-      // Очистка DOM-элементов
+      if (roomRef.current) {
+        roomRef.current.disconnect();
+        roomRef.current = null;
+      }
       Object.values(remoteElements.current).forEach((el) => {
         if (el.videoWrapper) el.videoWrapper.remove();
         if (el.audioEl) el.audioEl.remove();
@@ -184,8 +177,9 @@ const RoomPage = () => {
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = null;
       }
+      hasConnectedRef.current = false;
     };
-  }, [token, wsUrl]);
+  }, [token, wsUrl]); // зависимости остаются, но благодаря флагу эффект выполнится только один раз
 
   // Функции управления
   const toggleCamera = async () => {
@@ -266,7 +260,6 @@ const RoomPage = () => {
           overflow: 'auto',
         }}
       >
-        {/* Локальное видео */}
         <div style={{ position: 'relative', margin: '8px' }}>
           <video
             ref={localVideoRef}
@@ -293,7 +286,6 @@ const RoomPage = () => {
             Я
           </span>
         </div>
-        {/* Удалённые видео добавляются динамически */}
       </div>
 
       <div
