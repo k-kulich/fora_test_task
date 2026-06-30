@@ -1,30 +1,62 @@
-const { nanoid } = require('nanoid');
-
 const rooms = new Map();
 
-function generateRoomId() {
-  return nanoid(10);
-}
-
-function createRoom(roomId) {
-  if (rooms.has(roomId)) {
-    throw new Error('Room already exists');
+class RoomManager {
+  createRoom(roomId) {
+    if (rooms.has(roomId)) return;
+    rooms.set(roomId, {
+      id: roomId,
+      participants: [],
+      messages: [],
+      createdAt: Date.now(),
+    });
   }
-  rooms.set(roomId, { createdAt: Date.now() });
-  return roomId;
+
+  getRoom(roomId) {
+    return rooms.get(roomId) || null;
+  }
+
+  addParticipant(roomId, socketId, name) {
+    const room = this.getRoom(roomId);
+    if (!room) return { error: 'ROOM_NOT_FOUND' };
+    if (room.participants.length >= 4) {
+      return { error: 'ROOM_FULL' };
+    }
+    if (room.participants.some(p => p.socketId === socketId)) {
+      return { error: 'ALREADY_IN_ROOM' };
+    }
+    room.participants.push({ socketId, name, joinedAt: Date.now() });
+    return { success: true, room };
+  }
+
+  removeParticipant(roomId, socketId) {
+    const room = this.getRoom(roomId);
+    if (!room) return null;
+    const idx = room.participants.findIndex(p => p.socketId === socketId);
+    if (idx === -1) return null;
+    const removed = room.participants.splice(idx, 1)[0];
+    if (room.participants.length === 0) {
+      rooms.delete(roomId);
+    }
+    return removed;
+  }
+
+  getParticipants(roomId) {
+    const room = this.getRoom(roomId);
+    return room ? room.participants : [];
+  }
+
+  addMessage(roomId, senderName, text) {
+    const room = this.getRoom(roomId);
+    if (!room) return null;
+    const message = { senderName, text, timestamp: Date.now() };
+    room.messages.push(message);
+    return message;
+  }
+
+  getMessages(roomId) {
+    const room = this.getRoom(roomId);
+    return room ? room.messages : [];
+  }
 }
 
-function roomExists(roomId) {
-  return rooms.has(roomId);
-}
-
-function deleteRoom(roomId) {
-  rooms.delete(roomId);
-}
-
-module.exports = {
-  generateRoomId,
-  createRoom,
-  roomExists,
-  deleteRoom,
-};
+module.exports = new RoomManager();

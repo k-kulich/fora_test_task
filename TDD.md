@@ -253,5 +253,5 @@ const rooms = {
 ## 15. References
 
 - PRD: `prd-video-chat-room.md`
-- Правила: `prd-design.md`, `prd-tasks.md`
+- Правила: `prd-design.mdс`, `prd-tasks.mdс`
 - Демо: `https://chat.forasoft.com`

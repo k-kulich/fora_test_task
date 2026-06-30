@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Room, RoomEvent, Track } from 'livekit-client';
+import { useSocket } from './hooks/useSocket';
+import { useWebRTC } from './hooks/useWebRTC';
 
-// ========== SVG иконки ==========
+// SVG иконки (ваши, компактно)
 const IconMic = ({ enabled }) => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
     <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
     <line x1="12" y1="19" x2="12" y2="23" />
@@ -14,7 +15,7 @@ const IconMic = ({ enabled }) => (
 );
 
 const IconCamera = ({ enabled }) => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <path d="M23 7l-7 5 7 5V7z" />
     <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
     {!enabled && <line x1="3" y1="3" x2="21" y2="21" />}
@@ -22,7 +23,7 @@ const IconCamera = ({ enabled }) => (
 );
 
 const IconScreenShare = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
     <line x1="8" y1="21" x2="16" y2="21" />
     <line x1="12" y1="17" x2="12" y2="21" />
@@ -31,7 +32,7 @@ const IconScreenShare = () => (
 );
 
 const IconLeave = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
     <polyline points="16 17 21 12 16 7" />
     <line x1="21" y1="12" x2="9" y2="12" />
@@ -39,101 +40,92 @@ const IconLeave = () => (
 );
 
 const IconSend = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <line x1="22" y1="2" x2="11" y2="13" />
     <polygon points="22 2 15 22 11 13 2 9 22 2" />
   </svg>
 );
 
 const IconClose = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <line x1="18" y1="6" x2="6" y2="18" />
     <line x1="6" y1="6" x2="18" y2="18" />
   </svg>
 );
 
-// ========== Основной компонент ==========
-const RoomPage = () => {
+const IconCopy = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+  </svg>
+);
+
+const Room = () => {
   const { roomId } = useParams();
   const navigate = useNavigate();
 
-  const savedUserName = sessionStorage.getItem(`userName_${roomId}`) || '';
-  const savedCamera = sessionStorage.getItem(`cameraEnabled_${roomId}`) !== 'false';
-  const savedMic = sessionStorage.getItem(`micEnabled_${roomId}`) !== 'false';
-
+  const [userName, setUserName] = useState('');
   const [step, setStep] = useState('prejoin');
-  const [userName, setUserName] = useState(savedUserName);
-  const [cameraEnabled, setCameraEnabled] = useState(savedCamera);
-  const [micEnabled, setMicEnabled] = useState(savedMic);
-  const [localStream, setLocalStream] = useState(null);
-
-  const [token, setToken] = useState(null);
-  const [wsUrl, setWsUrl] = useState(null);
-  const [error, setError] = useState('');
-  const [isConnected, setIsConnected] = useState(false);
+  const [shouldConnect, setShouldConnect] = useState(false);
   const [participants, setParticipants] = useState([]);
-
-  const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [screenShareParticipantSid, setScreenShareParticipantSid] = useState(null);
-  const [screenStream, setScreenStream] = useState(null);
-
   const [messages, setMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
-
+  const [error, setError] = useState('');
   const [showStatus, setShowStatus] = useState(false);
+  const chatContainerRef = useRef(null);
+  const screenVideoRef = useRef(null);
 
+  // Prejoin
   const [prejoinVideoTrack, setPrejoinVideoTrack] = useState(null);
   const [prejoinAudioTrack, setPrejoinAudioTrack] = useState(null);
-
-  // Локальный поток камеры для отображения в комнате
-  const [localCameraStream, setLocalCameraStream] = useState(null);
-
-  const roomRef = useRef(null);
-  const localVideoRef = useRef(null);
-  const remoteElements = useRef({});
+  const [cameraEnabledPre, setCameraEnabledPre] = useState(true);
+  const [micEnabledPre, setMicEnabledPre] = useState(true);
   const prejoinVideoRef = useRef(null);
-  const screenVideoRef = useRef(null);
-  const chatContainerRef = useRef(null);
 
-  // Сохраняем имя и настройки
-  useEffect(() => {
-    sessionStorage.setItem(`userName_${roomId}`, userName);
-  }, [userName, roomId]);
+  const onStateUpdate = useCallback((type, data) => {
+    if (type === 'state') {
+      setParticipants(data.participants);
+      setMessages(data.messages);
+    } else if (type === 'joined') {
+      setParticipants(prev => [...prev, { socketId: data.socketId, name: data.name }]);
+    } else if (type === 'left') {
+      setParticipants(prev => prev.filter(p => p.socketId !== data.socketId));
+    } else if (type === 'chat') {
+      setMessages(prev => [...prev, data]);
+    } else if (type === 'error' || type === 'room-full') {
+      setError(data.message || 'Ошибка');
+    }
+  }, []);
 
-  useEffect(() => {
-    sessionStorage.setItem(`cameraEnabled_${roomId}`, cameraEnabled);
-  }, [cameraEnabled, roomId]);
+  const { socket, isConnected } = useSocket(roomId, userName, onStateUpdate, shouldConnect);
+  const {
+    localStream,
+    remoteStreams,
+    localVideoRef,
+    cameraEnabled,
+    micEnabled,
+    toggleCamera,
+    toggleMic,
+    isScreenSharing,
+    toggleScreenShare,
+    screenStream,
+  } = useWebRTC(socket, roomId, userName, participants, shouldConnect);
 
-  useEffect(() => {
-    sessionStorage.setItem(`micEnabled_${roomId}`, micEnabled);
-  }, [micEnabled, roomId]);
-
-  // Автоскролл чата
   useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [messages]);
 
-  // Синхронизация локального видео с ref
-  useEffect(() => {
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = localCameraStream;
-    }
-  }, [localCameraStream]);
-
-  // Синхронизация экрана с ref
   useEffect(() => {
     if (screenVideoRef.current && screenStream) {
       screenVideoRef.current.srcObject = screenStream;
-      screenVideoRef.current.muted = true;
     }
     if (screenVideoRef.current && !screenStream) {
       screenVideoRef.current.srcObject = null;
     }
   }, [screenStream]);
 
-  // Показываем уведомление о статусе
   useEffect(() => {
     if (isConnected) {
       setShowStatus(true);
@@ -142,7 +134,7 @@ const RoomPage = () => {
     }
   }, [isConnected]);
 
-  // ===== PreJoin =====
+  // PreJoin
   useEffect(() => {
     if (step !== 'prejoin') return;
     const getStream = async () => {
@@ -155,12 +147,10 @@ const RoomPage = () => {
         if (prejoinVideoRef.current) {
           prejoinVideoRef.current.srcObject = stream;
         }
-        if (!savedCamera) videoTrack.enabled = false;
-        if (!savedMic) audioTrack.enabled = false;
-        setCameraEnabled(savedCamera);
-        setMicEnabled(savedMic);
+        if (!cameraEnabledPre) videoTrack.enabled = false;
+        if (!micEnabledPre) audioTrack.enabled = false;
       } catch (err) {
-        console.error('Error accessing media devices:', err);
+        console.error(err);
         setError('Could not access camera and microphone');
       }
     };
@@ -172,12 +162,12 @@ const RoomPage = () => {
   }, [step]);
 
   const togglePrejoinCamera = async () => {
-    if (cameraEnabled) {
+    if (cameraEnabledPre) {
       if (prejoinVideoTrack) {
         prejoinVideoTrack.stop();
         setPrejoinVideoTrack(null);
       }
-      setCameraEnabled(false);
+      setCameraEnabledPre(false);
     } else {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -187,7 +177,7 @@ const RoomPage = () => {
         if (prejoinAudioTrack) combined.addTrack(prejoinAudioTrack);
         combined.addTrack(newTrack);
         if (prejoinVideoRef.current) prejoinVideoRef.current.srcObject = combined;
-        setCameraEnabled(true);
+        setCameraEnabledPre(true);
       } catch (e) {
         console.error(e);
       }
@@ -195,12 +185,12 @@ const RoomPage = () => {
   };
 
   const togglePrejoinMic = async () => {
-    if (micEnabled) {
+    if (micEnabledPre) {
       if (prejoinAudioTrack) {
         prejoinAudioTrack.stop();
         setPrejoinAudioTrack(null);
       }
-      setMicEnabled(false);
+      setMicEnabledPre(false);
     } else {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -210,406 +200,44 @@ const RoomPage = () => {
         if (prejoinVideoTrack) combined.addTrack(prejoinVideoTrack);
         combined.addTrack(newTrack);
         if (prejoinVideoRef.current) prejoinVideoRef.current.srcObject = combined;
-        setMicEnabled(true);
+        setMicEnabledPre(true);
       } catch (e) {
         console.error(e);
       }
     }
   };
 
-  const joinRoom = async () => {
-    if (!userName.trim()) {
-      setError('Please enter your name');
+  const joinRoom = () => {
+    const trimmed = userName.trim();
+    if (!trimmed) {
+      setError('Введите имя');
       return;
     }
-    try {
-      const response = await fetch(
-        `${import.meta.env.VITE_API_URL || 'http://localhost:3000/api'}/rooms/${roomId}/token?name=${encodeURIComponent(userName.trim())}`
-      );
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to get token');
-      }
-      const data = await response.json();
-      setToken(data.token);
-      setWsUrl(data.wsUrl || 'ws://localhost:7880');
-      setStep('room');
-    } catch (err) {
-      setError(err.message);
-    }
+    setError('');
+    setShouldConnect(true);
+    setStep('room');
   };
 
-  // ===== Room connection =====
-  useEffect(() => {
-    if (step !== 'room' || !token || !wsUrl) return;
-    if (roomRef.current) return;
-
-    const room = new Room({
-      adaptiveStream: true,
-      dynacast: true,
-      videoCaptureDefaults: {
-        resolution: { width: 640, height: 480 },
-      },
-    });
-    roomRef.current = room;
-
-    room.on(RoomEvent.ParticipantConnected, (participant) => {
-      setParticipants((prev) => [...prev, participant]);
-    });
-
-    room.on(RoomEvent.ParticipantDisconnected, (participant) => {
-      setParticipants((prev) => prev.filter((p) => p.sid !== participant.sid));
-      const el = remoteElements.current[participant.sid];
-      if (el) {
-        if (el.videoWrapper) el.videoWrapper.remove();
-        if (el.audioEl) el.audioEl.remove();
-        delete remoteElements.current[participant.sid];
-      }
-      if (screenShareParticipantSid === participant.sid) {
-        setScreenShareParticipantSid(null);
-        setScreenStream(null);
-      }
-    });
-
-    room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
-      if (participant.isLocal) return;
-      const sid = participant.sid;
-
-      if (track.kind === 'video' && track.source === Track.Source.ScreenShare) {
-        if (isScreenSharing) {
-          console.log('We are already sharing, ignoring remote screen');
-          return;
-        }
-        if (screenShareParticipantSid && screenShareParticipantSid !== sid) {
-          console.log('Screen share already active, skipping');
-          return;
-        }
-        setScreenShareParticipantSid(sid);
-        const attachScreen = () => {
-          if (screenVideoRef.current) {
-            track.attach(screenVideoRef.current);
-          } else {
-            setTimeout(attachScreen, 50);
-          }
-        };
-        attachScreen();
-        return;
-      }
-
-      if (track.kind === 'video' && track.source === Track.Source.Camera) {
-        if (!remoteElements.current[sid]) {
-          remoteElements.current[sid] = {};
-        }
-        const container = document.getElementById('video-grid');
-        if (!container) return;
-        let wrapper = remoteElements.current[sid].videoWrapper;
-        if (!wrapper) {
-          wrapper = document.createElement('div');
-          wrapper.style.position = 'relative';
-          wrapper.style.margin = '8px';
-          wrapper.dataset.participantId = sid;
-          const vid = document.createElement('video');
-          vid.autoplay = true;
-          vid.playsInline = true;
-          vid.style.width = '200px';
-          vid.style.height = '150px';
-          vid.style.background = '#333';
-          vid.style.borderRadius = '12px';
-          // буква
-          const letterEl = document.createElement('div');
-          letterEl.style.position = 'absolute';
-          letterEl.style.top = '50%';
-          letterEl.style.left = '50%';
-          letterEl.style.transform = 'translate(-50%, -50%)';
-          letterEl.style.fontSize = '48px';
-          letterEl.style.fontWeight = '700';
-          letterEl.style.color = '#FA37DA';
-          letterEl.textContent = (participant.name || 'U')[0].toUpperCase();
-          wrapper.appendChild(letterEl);
-          // label
-          const label = document.createElement('span');
-          label.style.position = 'absolute';
-          label.style.bottom = '4px';
-          label.style.left = '8px';
-          label.style.color = '#fff';
-          label.style.fontSize = '12px';
-          label.textContent = participant.name || 'Participant';
-          wrapper.appendChild(vid);
-          wrapper.appendChild(label);
-          container.appendChild(wrapper);
-          remoteElements.current[sid].videoWrapper = wrapper;
-          remoteElements.current[sid].videoEl = vid;
-          remoteElements.current[sid].letterEl = letterEl;
-        }
-        if (track) {
-          track.attach(remoteElements.current[sid].videoEl);
-          if (remoteElements.current[sid].letterEl) {
-            remoteElements.current[sid].letterEl.style.display = 'none';
-          }
-        }
-      } else if (track.kind === 'audio') {
-        if (!remoteElements.current[sid]) {
-          remoteElements.current[sid] = {};
-        }
-        let audioEl = remoteElements.current[sid].audioEl;
-        if (!audioEl) {
-          audioEl = document.createElement('audio');
-          audioEl.autoplay = true;
-          audioEl.style.display = 'none';
-          document.body.appendChild(audioEl);
-          remoteElements.current[sid].audioEl = audioEl;
-        }
-        track.attach(audioEl);
-        audioEl.play().catch(err => console.warn('Audio play error:', err));
-      }
-    });
-
-    room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
-      if (participant.isLocal) return;
-      const sid = participant.sid;
-      if (track.kind === 'video' && track.source === Track.Source.ScreenShare) {
-        setScreenShareParticipantSid(null);
-        setScreenStream(null);
-        if (screenVideoRef.current) {
-          screenVideoRef.current.srcObject = null;
-        }
-        return;
-      }
-      if (track.kind === 'video') {
-        const el = remoteElements.current[sid];
-        if (el && el.videoEl) {
-          track.detach(el.videoEl);
-          el.videoEl.srcObject = null;
-          if (el.letterEl) el.letterEl.style.display = 'block';
-        }
-      } else if (track.kind === 'audio') {
-        const audioEl = remoteElements.current[sid]?.audioEl;
-        if (audioEl) track.detach(audioEl);
-      }
-    });
-
-    room.on(RoomEvent.Disconnected, () => {
-      setIsConnected(false);
-      roomRef.current = null;
-      setScreenShareParticipantSid(null);
-      setIsScreenSharing(false);
-      setScreenStream(null);
-    });
-
-    // Чат
-    room.on(RoomEvent.DataReceived, (payload, participant) => {
-      try {
-        const data = JSON.parse(new TextDecoder().decode(payload));
-        if (data.type === 'chat') {
-          setMessages((prev) => [...prev, {
-            sender: data.sender || participant.name || 'Unknown',
-            text: data.text,
-            timestamp: Date.now()
-          }]);
-        }
-      } catch (e) {
-        console.error('Error parsing chat message:', e);
-      }
-    });
-
-    const connect = async () => {
-      try {
-        await room.connect(wsUrl, token);
-        setIsConnected(true);
-
-        if (cameraEnabled) {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-          const track = stream.getVideoTracks()[0];
-          await room.localParticipant.publishTrack(track, { source: Track.Source.Camera });
-          setLocalCameraStream(stream);
-        } else {
-          setLocalCameraStream(null);
-        }
-
-        if (micEnabled) {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          const track = stream.getAudioTracks()[0];
-          await room.localParticipant.publishTrack(track, { source: Track.Source.Microphone });
-        }
-        console.log('Connected to room');
-      } catch (err) {
-        console.error('Connection error:', err);
-        setError(err.message);
-        roomRef.current = null;
-      }
-    };
-
-    connect();
-
-    return () => {
-      if (roomRef.current) {
-        roomRef.current.disconnect();
-        roomRef.current = null;
-      }
-      Object.values(remoteElements.current).forEach((el) => {
-        if (el.videoWrapper) el.videoWrapper.remove();
-        if (el.audioEl) el.audioEl.remove();
-      });
-      remoteElements.current = {};
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = null;
-      }
-      if (screenVideoRef.current) {
-        screenVideoRef.current.srcObject = null;
-      }
-      setLocalCameraStream(null);
-      setScreenStream(null);
-      setScreenShareParticipantSid(null);
-      setIsScreenSharing(false);
-      setMessages([]);
-    };
-  }, [step, token, wsUrl]);
-
-  // ===== Отправка сообщения =====
-  const sendChatMessage = async () => {
-    if (!chatInput.trim() || !roomRef.current) return;
-    const message = {
-      type: 'chat',
-      sender: userName || 'Anonymous',
-      text: chatInput.trim()
-    };
-    try {
-      const encoder = new TextEncoder();
-      const data = encoder.encode(JSON.stringify(message));
-      await roomRef.current.localParticipant.publishData(data, { reliable: true });
-      setMessages((prev) => [...prev, {
-        sender: message.sender,
-        text: message.text,
-        timestamp: Date.now()
-      }]);
-      setChatInput('');
-    } catch (err) {
-      console.error('Error sending chat message:', err);
-    }
-  };
-
-  // ===== Демонстрация экрана =====
-  const toggleScreenShare = async () => {
-    if (!roomRef.current) return;
-
-    if (screenShareParticipantSid && !isScreenSharing) {
-      alert('Someone is already sharing their screen');
-      return;
-    }
-
-    if (isScreenSharing) {
-      await stopScreenShare();
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-      const track = stream.getVideoTracks()[0];
-      if (!track) {
-        throw new Error('No video track available');
-      }
-
-      const publication = await roomRef.current.localParticipant.publishTrack(track, {
-        source: Track.Source.ScreenShare,
-        name: 'screen',
-      });
-
-      setIsScreenSharing(true);
-      setScreenStream(stream);
-
-      track.onended = () => {
-        stopScreenShare();
-      };
-    } catch (err) {
-      console.error('Error starting screen share:', err);
-      alert('Could not start screen share: ' + err.message);
-    }
-  };
-
-  const stopScreenShare = async () => {
-    if (!roomRef.current) return;
-    const pub = roomRef.current.localParticipant.getTrackPublication(Track.Source.ScreenShare);
-    if (pub && pub.track) {
-      pub.track.stop();
-      await roomRef.current.localParticipant.unpublishTrack(pub.track);
-    }
-    setIsScreenSharing(false);
-    setScreenShareParticipantSid(null);
-    setScreenStream(null);
-    if (screenVideoRef.current) {
-      screenVideoRef.current.srcObject = null;
-    }
-  };
-
-  // ===== Управление камерой и микрофоном =====
-  const toggleCamera = async () => {
-    if (!roomRef.current) return;
-    const participant = roomRef.current.localParticipant;
-    try {
-      if (cameraEnabled) {
-        const pub = participant.getTrackPublication(Track.Source.Camera);
-        if (pub && pub.track) {
-          pub.track.stop();
-          await participant.unpublishTrack(pub.track);
-        }
-        setCameraEnabled(false);
-        setLocalCameraStream(null);
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = null;
-        }
-      } else {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        const track = stream.getVideoTracks()[0];
-        await participant.publishTrack(track, { source: Track.Source.Camera });
-        setCameraEnabled(true);
-        setLocalCameraStream(stream);
-      }
-    } catch (err) {
-      console.error('Camera toggle error:', err);
-    }
-  };
-
-  const toggleMic = async () => {
-    if (!roomRef.current) return;
-    const participant = roomRef.current.localParticipant;
-    try {
-      if (micEnabled) {
-        const pub = participant.getTrackPublication(Track.Source.Microphone);
-        if (pub && pub.track) {
-          pub.track.stop();
-          await participant.unpublishTrack(pub.track);
-        }
-        setMicEnabled(false);
-      } else {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const track = stream.getAudioTracks()[0];
-        await participant.publishTrack(track, { source: Track.Source.Microphone });
-        setMicEnabled(true);
-      }
-    } catch (err) {
-      console.error('Mic toggle error:', err);
-    }
+  const sendMessage = () => {
+    if (!chatInput.trim() || !socket) return;
+    socket.emit('chat-message', { roomId, text: chatInput.trim() });
+    setChatInput('');
   };
 
   const leaveRoom = () => {
-    if (roomRef.current) roomRef.current.disconnect();
-    sessionStorage.removeItem(`userName_${roomId}`);
-    sessionStorage.removeItem(`cameraEnabled_${roomId}`);
-    sessionStorage.removeItem(`micEnabled_${roomId}`);
+    if (socket) {
+      socket.emit('leave-room', { roomId });
+      socket.disconnect();
+    }
     navigate('/');
   };
 
-  const scrollGridLeft = () => {
-    const grid = document.getElementById('video-grid');
-    if (grid) grid.scrollBy({ left: -280, behavior: 'smooth' });
+  const copyLink = () => {
+    navigator.clipboard.writeText(window.location.href)
+      .then(() => alert('Ссылка скопирована'))
+      .catch(() => alert('Не удалось скопировать'));
   };
 
-  const scrollGridRight = () => {
-    const grid = document.getElementById('video-grid');
-    if (grid) grid.scrollBy({ left: 280, behavior: 'smooth' });
-  };
-
-  // ===== PreJoin view =====
   if (step === 'prejoin') {
     return (
       <div style={prejoinStyles.page}>
@@ -626,18 +254,22 @@ const RoomPage = () => {
           </div>
           <div style={prejoinStyles.controls}>
             <button onClick={togglePrejoinCamera} style={prejoinStyles.iconButton}>
-              <IconCamera enabled={cameraEnabled} />
+              <IconCamera enabled={cameraEnabledPre} />
             </button>
             <button onClick={togglePrejoinMic} style={prejoinStyles.iconButton}>
-              <IconMic enabled={micEnabled} />
+              <IconMic enabled={micEnabledPre} />
             </button>
+          </div>
+          <div style={prejoinStyles.roomInfo}>
+            Комната: <span style={prejoinStyles.roomName}>{roomId}</span>
           </div>
           <input
             type="text"
-            placeholder="Your name"
+            placeholder="Ваше имя"
             value={userName}
             onChange={(e) => setUserName(e.target.value)}
             style={prejoinStyles.input}
+            maxLength={30}
           />
           <button onClick={joinRoom} style={prejoinStyles.joinButton}>
             Join Call
@@ -647,9 +279,6 @@ const RoomPage = () => {
       </div>
     );
   }
-
-  // ===== Room view =====
-  const isScreenActive = screenShareParticipantSid || isScreenSharing;
 
   return (
     <div style={roomStyles.container}>
@@ -663,57 +292,46 @@ const RoomPage = () => {
       )}
 
       <div style={roomStyles.mainArea}>
-        {/* Видео-область */}
         <div style={roomStyles.videoArea}>
-          {isScreenActive && (
+          {isScreenSharing && (
             <div style={roomStyles.screenContainer}>
-              <video
-                ref={screenVideoRef}
-                autoPlay
-                playsInline
-                style={roomStyles.screenVideo}
-              />
-              {isScreenSharing && <span style={roomStyles.screenLabel}>You are sharing</span>}
-              {screenShareParticipantSid && !isScreenSharing && (
-                <span style={roomStyles.screenLabel}>Screen share</span>
-              )}
+              <video ref={screenVideoRef} autoPlay playsInline style={roomStyles.screenVideo} />
+              <span style={roomStyles.screenLabel}>You are sharing</span>
             </div>
           )}
 
           <div style={roomStyles.gridWrapper}>
             <div id="video-grid" style={roomStyles.grid}>
-              {/* Локальное видео */}
               <div style={roomStyles.participantTile}>
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  style={roomStyles.videoTile}
-                />
+                {cameraEnabled ? (
+                  <video ref={localVideoRef} autoPlay muted playsInline style={{ ...roomStyles.videoTile, transform: 'scaleX(-1)' }} />
+                ) : (
+                  <div style={{ ...roomStyles.placeholderOverlay, fontSize: '64px', fontWeight: 'bold', background: '#333', color: '#FA37DA' }}>
+                    {(userName || '?')[0].toUpperCase()}
+                  </div>
+                )}
                 <span style={roomStyles.participantName}>{userName || 'You'}</span>
               </div>
-              {/* Удалённые участники — добавляются динамически в video-grid */}
+              {Object.entries(remoteStreams).map(([socketId, stream]) => {
+                const p = participants.find(pp => pp.socketId === socketId);
+                return (
+                  <div key={socketId} style={roomStyles.participantTile}>
+                    <video autoPlay playsInline ref={el => { if (el) el.srcObject = stream; }} style={roomStyles.videoTile} />
+                    <span style={roomStyles.participantName}>{p?.name || 'Участник'}</span>
+                  </div>
+                );
+              })}
             </div>
-            {isScreenActive && participants.length > 1 && (
-              <div style={roomStyles.carouselControls}>
-                <button style={roomStyles.carouselBtn} onClick={scrollGridLeft}>‹</button>
-                <button style={roomStyles.carouselBtn} onClick={scrollGridRight}>›</button>
-              </div>
-            )}
           </div>
         </div>
 
-        {/* Чат */}
         <div style={roomStyles.chatPanel}>
           <div style={roomStyles.chatHeader}>Chat</div>
           <div ref={chatContainerRef} style={roomStyles.chatMessages}>
-            {messages.length === 0 && (
-              <div style={roomStyles.emptyChat}>No messages yet</div>
-            )}
+            {messages.length === 0 && <div style={roomStyles.emptyChat}>No messages yet</div>}
             {messages.map((msg, idx) => (
               <div key={idx} style={roomStyles.chatMessage}>
-                <strong style={roomStyles.chatSender}>{msg.sender}:</strong> {msg.text}
+                <strong style={roomStyles.chatSender}>{msg.senderName}:</strong> {msg.text}
               </div>
             ))}
           </div>
@@ -723,45 +341,45 @@ const RoomPage = () => {
               placeholder="Type a message..."
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && sendChatMessage()}
+              onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
               style={roomStyles.chatInput}
             />
-            <button onClick={sendChatMessage} style={roomStyles.sendButton}>
+            <button onClick={sendMessage} style={roomStyles.sendButton}>
               <IconSend />
             </button>
           </div>
         </div>
       </div>
 
-      {/* Нижняя панель */}
       <div style={roomStyles.controlsBar}>
-        <button onClick={toggleCamera} style={roomStyles.controlButton}>
+        <button
+          onClick={toggleCamera}
+          style={{
+            ...roomStyles.controlButton,
+            opacity: isScreenSharing ? 0.4 : 1,
+            cursor: isScreenSharing ? 'not-allowed' : 'pointer',
+          }}
+          disabled={isScreenSharing}
+        >
           <IconCamera enabled={cameraEnabled} />
         </button>
         <button onClick={toggleMic} style={roomStyles.controlButton}>
           <IconMic enabled={micEnabled} />
         </button>
-        <button
-          onClick={toggleScreenShare}
-          disabled={!!screenShareParticipantSid && !isScreenSharing}
-          style={{
-            ...roomStyles.controlButton,
-            ...(isScreenSharing ? roomStyles.controlButtonActive : {}),
-            opacity: (screenShareParticipantSid && !isScreenSharing) ? 0.4 : 1,
-            cursor: (screenShareParticipantSid && !isScreenSharing) ? 'not-allowed' : 'pointer',
-          }}
-        >
+        <button onClick={toggleScreenShare} style={{ ...roomStyles.controlButton, ...(isScreenSharing ? roomStyles.controlButtonActive : {}) }}>
           <IconScreenShare />
         </button>
         <button onClick={leaveRoom} style={{ ...roomStyles.controlButton, background: '#ff4444' }}>
           <IconLeave />
+        </button>
+        <button onClick={copyLink} style={roomStyles.controlButton}>
+          <IconCopy />
         </button>
       </div>
     </div>
   );
 };
 
-// ===== Стили =====
 const prejoinStyles = {
   page: {
     minHeight: '100vh',
@@ -781,319 +399,47 @@ const prejoinStyles = {
     width: '100%',
     textAlign: 'center',
     boxShadow: '0 20px 40px rgba(250,55,218,0.25), 0 0 0 1px rgba(76,55,250,0.2)',
+    boxSizing: 'border-box',
   },
-  title: {
-    fontSize: '24px',
-    fontWeight: 700,
-    color: '#fff',
-    marginBottom: '24px',
-  },
-  videoWrapper: {
-    width: '100%',
-    aspectRatio: '4/3',
-    background: '#222',
-    borderRadius: '20px',
-    overflow: 'hidden',
-    marginBottom: '20px',
-  },
-  video: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'cover',
-    transform: 'scaleX(-1)',
-  },
-  controls: {
-    display: 'flex',
-    justifyContent: 'center',
-    gap: '20px',
-    marginBottom: '24px',
-  },
-  iconButton: {
-    background: 'rgba(255,255,255,0.08)',
-    border: '1px solid rgba(250,55,218,0.4)',
-    borderRadius: '50%',
-    width: '48px',
-    height: '48px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: '#fff',
-    cursor: 'pointer',
-    transition: '0.2s',
-  },
-  input: {
-    width: '100%',
-    padding: '14px 20px',
-    borderRadius: '60px',
-    border: '1px solid rgba(250,55,218,0.4)',
-    background: 'rgba(255,255,255,0.05)',
-    color: '#fff',
-    fontSize: '16px',
-    outline: 'none',
-    marginBottom: '20px',
-    fontFamily: 'inherit',
-  },
-  joinButton: {
-    width: '100%',
-    padding: '14px',
-    borderRadius: '60px',
-    border: 'none',
-    background: 'linear-gradient(95deg, #FA37DA, #4C37FA)',
-    color: '#fff',
-    fontSize: '18px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    transition: '0.2s',
-    boxShadow: '0 4px 12px rgba(76,55,250,0.3)',
-    fontFamily: 'inherit',
-  },
-  error: {
-    color: '#ff6b6b',
-    fontSize: '14px',
-    marginTop: '12px',
-  },
+  title: { fontSize: '24px', fontWeight: 700, color: '#fff', marginBottom: '24px' },
+  videoWrapper: { width: '100%', aspectRatio: '4/3', background: '#222', borderRadius: '20px', overflow: 'hidden', marginBottom: '20px' },
+  video: { width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' },
+  controls: { display: 'flex', justifyContent: 'center', gap: '20px', marginBottom: '24px' },
+  iconButton: { background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(250,55,218,0.4)', borderRadius: '50%', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', cursor: 'pointer', transition: '0.2s' },
+  roomInfo: { color: '#aaa', fontSize: '14px', marginBottom: '16px' },
+  roomName: { color: '#fff', fontWeight: 600 },
+  input: { width: '100%', padding: '14px 20px', borderRadius: '60px', border: '1px solid rgba(250,55,218,0.4)', background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: '16px', outline: 'none', marginBottom: '20px', fontFamily: 'inherit', boxSizing: 'border-box' },
+  joinButton: { width: '100%', padding: '14px', borderRadius: '60px', border: 'none', background: 'linear-gradient(95deg, #FA37DA, #4C37FA)', color: '#fff', fontSize: '18px', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 12px rgba(76,55,250,0.3)', fontFamily: 'inherit' },
+  error: { color: '#ff6b6b', fontSize: '14px', marginTop: '12px' },
 };
 
 const roomStyles = {
-  container: {
-    height: '100vh',
-    display: 'flex',
-    flexDirection: 'column',
-    background: '#111',
-    fontFamily: "'Inter', sans-serif",
-    position: 'relative',
-  },
-  notification: {
-    position: 'fixed',
-    top: '20px',
-    right: '20px',
-    background: 'rgba(0,0,0,0.85)',
-    backdropFilter: 'blur(8px)',
-    border: '1px solid rgba(250,55,218,0.3)',
-    borderRadius: '40px',
-    padding: '10px 20px',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-    color: '#fff',
-    fontSize: '14px',
-    zIndex: 100,
-    boxShadow: '0 8px 20px rgba(0,0,0,0.5)',
-  },
-  closeNotif: {
-    background: 'none',
-    border: 'none',
-    color: '#aaa',
-    cursor: 'pointer',
-    padding: '0',
-    display: 'flex',
-  },
-  mainArea: {
-    flex: 1,
-    display: 'flex',
-    overflow: 'hidden',
-    padding: '16px',
-    gap: '16px',
-  },
-  videoArea: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
-    minWidth: 0,
-  },
-  screenContainer: {
-    width: '100%',
-    height: '300px',
-    background: '#222',
-    borderRadius: '20px',
-    overflow: 'hidden',
-    position: 'relative',
-    flexShrink: 0,
-  },
-  screenVideo: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'contain',
-    background: '#111',
-  },
-  screenLabel: {
-    position: 'absolute',
-    bottom: '12px',
-    left: '16px',
-    color: '#fff',
-    fontSize: '14px',
-    background: 'rgba(0,0,0,0.6)',
-    padding: '4px 12px',
-    borderRadius: '20px',
-  },
-  gridWrapper: {
-    flex: 1,
-    position: 'relative',
-    overflow: 'hidden',
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  grid: {
-    display: 'flex',
-    flexWrap: 'nowrap',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: '12px',
-    padding: '8px 16px',
-    overflowX: 'auto',
-    scrollBehavior: 'smooth',
-    height: '100%',
-    minHeight: '150px',
-  },
-  participantTile: {
-    position: 'relative',
-    width: '200px',
-    height: '150px',
-    background: '#333',
-    borderRadius: '16px',
-    overflow: 'hidden',
-    flexShrink: 0,
-  },
-  videoTile: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'cover',
-    background: '#222',
-    transform: 'scaleX(-1)',
-  },
-  participantName: {
-    position: 'absolute',
-    bottom: '6px',
-    left: '10px',
-    color: '#fff',
-    fontSize: '13px',
-    textShadow: '0 1px 4px rgba(0,0,0,0.8)',
-  },
-  chatPanel: {
-    width: '280px',
-    background: '#1a1a1a',
-    borderRadius: '24px',
-    display: 'flex',
-    flexDirection: 'column',
-    border: '1px solid rgba(250,55,218,0.15)',
-    flexShrink: 0,
-  },
-  chatHeader: {
-    padding: '14px 18px',
-    fontWeight: 600,
-    color: '#fff',
-    borderBottom: '1px solid rgba(255,255,255,0.05)',
-  },
-  chatMessages: {
-    flex: 1,
-    overflowY: 'auto',
-    padding: '12px 16px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px',
-  },
-  emptyChat: {
-    color: '#666',
-    textAlign: 'center',
-    marginTop: '30px',
-    fontSize: '14px',
-  },
-  chatMessage: {
-    background: 'rgba(255,255,255,0.05)',
-    padding: '6px 12px',
-    borderRadius: '12px',
-    fontSize: '14px',
-    color: '#eee',
-    wordBreak: 'break-word',
-  },
-  chatSender: {
-    color: '#FA37DA',
-    marginRight: '4px',
-  },
-  chatInputRow: {
-    display: 'flex',
-    padding: '12px 16px',
-    borderTop: '1px solid rgba(255,255,255,0.05)',
-    gap: '8px',
-  },
-  chatInput: {
-    flex: 1,
-    padding: '10px 16px',
-    borderRadius: '40px',
-    border: '1px solid rgba(250,55,218,0.3)',
-    background: 'rgba(255,255,255,0.05)',
-    color: '#fff',
-    fontSize: '14px',
-    outline: 'none',
-    fontFamily: 'inherit',
-  },
-  sendButton: {
-    background: 'linear-gradient(95deg, #FA37DA, #4C37FA)',
-    border: 'none',
-    borderRadius: '50%',
-    width: '40px',
-    height: '40px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: '#fff',
-    cursor: 'pointer',
-    flexShrink: 0,
-  },
-  controlsBar: {
-    display: 'flex',
-    justifyContent: 'center',
-    gap: '24px',
-    padding: '16px 24px',
-    background: 'rgba(0,0,0,0.7)',
-    backdropFilter: 'blur(8px)',
-    borderTop: '1px solid rgba(250,55,218,0.1)',
-  },
-  controlButton: {
-    background: 'rgba(255,255,255,0.08)',
-    border: '1px solid rgba(250,55,218,0.3)',
-    borderRadius: '50%',
-    width: '52px',
-    height: '52px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: '#fff',
-    cursor: 'pointer',
-    transition: '0.2s',
-  },
-  controlButtonActive: {
-    background: 'rgba(250,55,218,0.3)',
-    borderColor: '#FA37DA',
-  },
-  carouselControls: {
-    position: 'absolute',
-    top: '50%',
-    left: 0,
-    right: 0,
-    transform: 'translateY(-50%)',
-    display: 'flex',
-    justifyContent: 'space-between',
-    padding: '0 8px',
-    pointerEvents: 'none',
-  },
-  carouselBtn: {
-    background: 'rgba(0,0,0,0.7)',
-    border: '1px solid rgba(250,55,218,0.4)',
-    borderRadius: '50%',
-    width: '36px',
-    height: '36px',
-    color: '#fff',
-    fontSize: '24px',
-    cursor: 'pointer',
-    pointerEvents: 'auto',
-    backdropFilter: 'blur(4px)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    transition: '0.2s',
-  },
+  container: { height: '100vh', display: 'flex', flexDirection: 'column', background: '#111', fontFamily: "'Inter', sans-serif", position: 'relative' },
+  notification: { position: 'fixed', top: '20px', right: '20px', background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(8px)', border: '1px solid rgba(250,55,218,0.3)', borderRadius: '40px', padding: '10px 20px', display: 'flex', alignItems: 'center', gap: '12px', color: '#fff', fontSize: '14px', zIndex: 100, boxShadow: '0 8px 20px rgba(0,0,0,0.5)' },
+  closeNotif: { background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', padding: '0', display: 'flex' },
+  mainArea: { flex: 1, display: 'flex', overflow: 'hidden', padding: '16px', gap: '16px' },
+  videoArea: { flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0 },
+  screenContainer: { width: '100%', height: '300px', background: '#222', borderRadius: '20px', overflow: 'hidden', position: 'relative', flexShrink: 0 },
+  screenVideo: { width: '100%', height: '100%', objectFit: 'contain', background: '#111' },
+  screenLabel: { position: 'absolute', bottom: '12px', left: '16px', color: '#fff', fontSize: '14px', background: 'rgba(0,0,0,0.6)', padding: '4px 12px', borderRadius: '20px' },
+  gridWrapper: { flex: 1, position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column' },
+  grid: { display: 'flex', flexWrap: 'nowrap', justifyContent: 'center', alignItems: 'center', gap: '12px', padding: '8px 16px', overflowX: 'auto', scrollBehavior: 'smooth', height: '100%', minHeight: '150px' },
+  participantTile: { position: 'relative', width: '200px', height: '150px', background: '#333', borderRadius: '16px', overflow: 'hidden', flexShrink: 0 },
+  videoTile: { width: '100%', height: '100%', objectFit: 'cover', background: '#222' },
+  participantName: { position: 'absolute', bottom: '6px', left: '10px', color: '#fff', fontSize: '13px', textShadow: '0 1px 4px rgba(0,0,0,0.8)' },
+  placeholderOverlay: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', color: '#fff', fontSize: '14px' },
+  chatPanel: { width: '280px', background: '#1a1a1a', borderRadius: '24px', display: 'flex', flexDirection: 'column', border: '1px solid rgba(250,55,218,0.15)', flexShrink: 0 },
+  chatHeader: { padding: '14px 18px', fontWeight: 600, color: '#fff', borderBottom: '1px solid rgba(255,255,255,0.05)' },
+  chatMessages: { flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '6px' },
+  emptyChat: { color: '#666', textAlign: 'center', marginTop: '30px', fontSize: '14px' },
+  chatMessage: { background: 'rgba(255,255,255,0.05)', padding: '6px 12px', borderRadius: '12px', fontSize: '14px', color: '#eee', wordBreak: 'break-word' },
+  chatSender: { color: '#FA37DA', marginRight: '4px' },
+  chatInputRow: { display: 'flex', padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.05)', gap: '8px' },
+  chatInput: { flex: 1, padding: '10px 16px', borderRadius: '40px', border: '1px solid rgba(250,55,218,0.3)', background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: '14px', outline: 'none', fontFamily: 'inherit' },
+  sendButton: { background: 'linear-gradient(95deg, #FA37DA, #4C37FA)', border: 'none', borderRadius: '50%', width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', cursor: 'pointer', flexShrink: 0 },
+  controlsBar: { display: 'flex', justifyContent: 'center', gap: '24px', padding: '16px 24px', background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)', borderTop: '1px solid rgba(250,55,218,0.1)' },
+  controlButton: { background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(250,55,218,0.3)', borderRadius: '50%', width: '52px', height: '52px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', cursor: 'pointer', transition: '0.2s' },
+  controlButtonActive: { background: 'rgba(250,55,218,0.3)', borderColor: '#FA37DA' },
 };
 
-export default RoomPage;
+export default Room;
