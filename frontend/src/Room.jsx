@@ -3,7 +3,6 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useSocket } from './hooks/useSocket';
 import { useWebRTC } from './hooks/useWebRTC';
 
-// SVG иконки (ваши, компактно)
 const IconMic = ({ enabled }) => (
   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
@@ -60,6 +59,7 @@ const IconCopy = () => (
   </svg>
 );
 
+// ========== ОСНОВНОЙ КОМПОНЕНТ ==========
 const Room = () => {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -75,13 +75,11 @@ const Room = () => {
   const chatContainerRef = useRef(null);
   const screenVideoRef = useRef(null);
 
-  // Prejoin
-  const [prejoinVideoTrack, setPrejoinVideoTrack] = useState(null);
-  const [prejoinAudioTrack, setPrejoinAudioTrack] = useState(null);
-  const [cameraEnabledPre, setCameraEnabledPre] = useState(true);
-  const [micEnabledPre, setMicEnabledPre] = useState(true);
+  // Prejoin refs
   const prejoinVideoRef = useRef(null);
+  const [prejoinStream, setPrejoinStream] = useState(null);
 
+  // Обработчик событий сокета
   const onStateUpdate = useCallback((type, data) => {
     if (type === 'state') {
       setParticipants(data.participants);
@@ -93,11 +91,13 @@ const Room = () => {
     } else if (type === 'chat') {
       setMessages(prev => [...prev, data]);
     } else if (type === 'error' || type === 'room-full') {
-      setError(data.message || 'Ошибка');
+      setError(data.message || 'Error');
     }
   }, []);
 
   const { socket, isConnected } = useSocket(roomId, userName, onStateUpdate, shouldConnect);
+
+  // useWebRTC будет использовать тот же стрим, что и prejoin
   const {
     localStream,
     remoteStreams,
@@ -109,115 +109,37 @@ const Room = () => {
     isScreenSharing,
     toggleScreenShare,
     screenStream,
+    setLocalStream, // добавим возможность установить стрим извне
   } = useWebRTC(socket, roomId, userName, participants, shouldConnect);
 
-  useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-    }
-  }, [messages]);
-
-  useEffect(() => {
-    if (screenVideoRef.current && screenStream) {
-      screenVideoRef.current.srcObject = screenStream;
-    }
-    if (screenVideoRef.current && !screenStream) {
-      screenVideoRef.current.srcObject = null;
-    }
-  }, [screenStream]);
-
-  useEffect(() => {
-    if (isConnected) {
-      setShowStatus(true);
-      const timer = setTimeout(() => setShowStatus(false), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [isConnected]);
-
-  // PreJoin
+  // ===== PREJOIN: получаем стрим и показываем в превью =====
   useEffect(() => {
     if (step !== 'prejoin') return;
     const getStream = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        const videoTrack = stream.getVideoTracks()[0];
-        const audioTrack = stream.getAudioTracks()[0];
-        setPrejoinVideoTrack(videoTrack);
-        setPrejoinAudioTrack(audioTrack);
+        setPrejoinStream(stream);
         if (prejoinVideoRef.current) {
           prejoinVideoRef.current.srcObject = stream;
         }
-        if (!cameraEnabledPre) videoTrack.enabled = false;
-        if (!micEnabledPre) audioTrack.enabled = false;
+        // Передаём стрим в useWebRTC
+        if (setLocalStream) {
+          setLocalStream(stream);
+        }
       } catch (err) {
-        console.error(err);
-        setError('Could not access camera and microphone');
+        console.error('Prejoin getUserMedia error:', err);
+        setError('Cannot connect to camera and microphone');
       }
     };
     getStream();
     return () => {
-      if (prejoinVideoTrack) prejoinVideoTrack.stop();
-      if (prejoinAudioTrack) prejoinAudioTrack.stop();
+      if (prejoinStream) {
+        prejoinStream.getTracks().forEach(t => t.stop());
+      }
     };
   }, [step]);
 
-  const togglePrejoinCamera = async () => {
-    if (cameraEnabledPre) {
-      if (prejoinVideoTrack) {
-        prejoinVideoTrack.stop();
-        setPrejoinVideoTrack(null);
-      }
-      setCameraEnabledPre(false);
-    } else {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        const newTrack = stream.getVideoTracks()[0];
-        setPrejoinVideoTrack(newTrack);
-        const combined = new MediaStream();
-        if (prejoinAudioTrack) combined.addTrack(prejoinAudioTrack);
-        combined.addTrack(newTrack);
-        if (prejoinVideoRef.current) prejoinVideoRef.current.srcObject = combined;
-        setCameraEnabledPre(true);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-  };
-
-  const togglePrejoinMic = async () => {
-    if (micEnabledPre) {
-      if (prejoinAudioTrack) {
-        prejoinAudioTrack.stop();
-        setPrejoinAudioTrack(null);
-      }
-      setMicEnabledPre(false);
-    } else {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const newTrack = stream.getAudioTracks()[0];
-        setPrejoinAudioTrack(newTrack);
-        const combined = new MediaStream();
-        if (prejoinVideoTrack) combined.addTrack(prejoinVideoTrack);
-        combined.addTrack(newTrack);
-        if (prejoinVideoRef.current) prejoinVideoRef.current.srcObject = combined;
-        setMicEnabledPre(true);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-  };
-
-  const joinRoom = () => {
-    const trimmed = userName.trim();
-    if (!trimmed) {
-      setError('Введите имя');
-      return;
-    }
-    setError('');
-    setShouldConnect(true);
-    setStep('room');
-  };
-
+  // ===== КОМНАТНЫЕ ФУНКЦИИ =====
   const sendMessage = () => {
     if (!chatInput.trim() || !socket) return;
     socket.emit('chat-message', { roomId, text: chatInput.trim() });
@@ -234,10 +156,49 @@ const Room = () => {
 
   const copyLink = () => {
     navigator.clipboard.writeText(window.location.href)
-      .then(() => alert('Ссылка скопирована'))
-      .catch(() => alert('Не удалось скопировать'));
+      .then(() => alert('Link copied'))
+      .catch(() => alert('Cannot copy link'));
   };
 
+  const joinRoom = () => {
+    const trimmed = userName.trim();
+    if (!trimmed) {
+      setError('Enter the nickname');
+      return;
+    }
+    setError('');
+    // Передаём стрим в useWebRTC (он уже должен быть получен)
+    setShouldConnect(true);
+    setStep('room');
+  };
+
+  // Автоскролл чата
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  // Отображение своего экрана
+  useEffect(() => {
+    if (screenVideoRef.current && screenStream) {
+      screenVideoRef.current.srcObject = screenStream;
+    }
+    if (screenVideoRef.current && !screenStream) {
+      screenVideoRef.current.srcObject = null;
+    }
+  }, [screenStream]);
+
+  // Уведомление о подключении
+  useEffect(() => {
+    if (isConnected) {
+      setShowStatus(true);
+      const timer = setTimeout(() => setShowStatus(false), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [isConnected]);
+
+  // ===== PREJOIN VIEW =====
   if (step === 'prejoin') {
     return (
       <div style={prejoinStyles.page}>
@@ -253,19 +214,14 @@ const Room = () => {
             />
           </div>
           <div style={prejoinStyles.controls}>
-            <button onClick={togglePrejoinCamera} style={prejoinStyles.iconButton}>
-              <IconCamera enabled={cameraEnabledPre} />
-            </button>
-            <button onClick={togglePrejoinMic} style={prejoinStyles.iconButton}>
-              <IconMic enabled={micEnabledPre} />
-            </button>
+            {/* Временно кнопки управления превью - можно добавить позже */}
           </div>
           <div style={prejoinStyles.roomInfo}>
-            Комната: <span style={prejoinStyles.roomName}>{roomId}</span>
+            Room: <span style={prejoinStyles.roomName}>{roomId}</span>
           </div>
           <input
             type="text"
-            placeholder="Ваше имя"
+            placeholder="Enter your nickname"
             value={userName}
             onChange={(e) => setUserName(e.target.value)}
             style={prejoinStyles.input}
@@ -280,11 +236,12 @@ const Room = () => {
     );
   }
 
+  // ===== ROOM VIEW =====
   return (
     <div style={roomStyles.container}>
       {showStatus && (
         <div style={roomStyles.notification}>
-          <span>{isConnected ? '🟢 Connected' : '🔴 Disconnected'}</span>
+          <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
           <button onClick={() => setShowStatus(false)} style={roomStyles.closeNotif}>
             <IconClose />
           </button>
@@ -302,6 +259,7 @@ const Room = () => {
 
           <div style={roomStyles.gridWrapper}>
             <div id="video-grid" style={roomStyles.grid}>
+              {/* Self-view */}
               <div style={roomStyles.participantTile}>
                 {cameraEnabled ? (
                   <video ref={localVideoRef} autoPlay muted playsInline style={{ ...roomStyles.videoTile, transform: 'scaleX(-1)' }} />
@@ -312,11 +270,20 @@ const Room = () => {
                 )}
                 <span style={roomStyles.participantName}>{userName || 'You'}</span>
               </div>
+
+              {/* Remote participants */}
               {Object.entries(remoteStreams).map(([socketId, stream]) => {
                 const p = participants.find(pp => pp.socketId === socketId);
+                const hasVideo = stream && stream.getVideoTracks().length > 0;
                 return (
                   <div key={socketId} style={roomStyles.participantTile}>
-                    <video autoPlay playsInline ref={el => { if (el) el.srcObject = stream; }} style={roomStyles.videoTile} />
+                    {hasVideo ? (
+                      <video autoPlay playsInline ref={el => { if (el) el.srcObject = stream; }} style={roomStyles.videoTile} />
+                    ) : (
+                      <div style={{ ...roomStyles.placeholderOverlay, fontSize: '64px', fontWeight: 'bold', background: '#333', color: '#FA37DA' }}>
+                        {(p?.name || '?')[0].toUpperCase()}
+                      </div>
+                    )}
                     <span style={roomStyles.participantName}>{p?.name || 'Участник'}</span>
                   </div>
                 );
@@ -325,6 +292,7 @@ const Room = () => {
           </div>
         </div>
 
+        {/* Чат */}
         <div style={roomStyles.chatPanel}>
           <div style={roomStyles.chatHeader}>Chat</div>
           <div ref={chatContainerRef} style={roomStyles.chatMessages}>
@@ -351,6 +319,7 @@ const Room = () => {
         </div>
       </div>
 
+      {/* Нижняя панель управления */}
       <div style={roomStyles.controlsBar}>
         <button
           onClick={toggleCamera}
@@ -380,6 +349,7 @@ const Room = () => {
   );
 };
 
+// ===== СТИЛИ =====
 const prejoinStyles = {
   page: {
     minHeight: '100vh',
@@ -405,29 +375,28 @@ const prejoinStyles = {
   videoWrapper: { width: '100%', aspectRatio: '4/3', background: '#222', borderRadius: '20px', overflow: 'hidden', marginBottom: '20px' },
   video: { width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' },
   controls: { display: 'flex', justifyContent: 'center', gap: '20px', marginBottom: '24px' },
-  iconButton: { background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(250,55,218,0.4)', borderRadius: '50%', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', cursor: 'pointer', transition: '0.2s' },
   roomInfo: { color: '#aaa', fontSize: '14px', marginBottom: '16px' },
   roomName: { color: '#fff', fontWeight: 600 },
-  input: { width: '100%', padding: '14px 20px', borderRadius: '60px', border: '1px solid rgba(250,55,218,0.4)', background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: '16px', outline: 'none', marginBottom: '20px', fontFamily: 'inherit', boxSizing: 'border-box' },
-  joinButton: { width: '100%', padding: '14px', borderRadius: '60px', border: 'none', background: 'linear-gradient(95deg, #FA37DA, #4C37FA)', color: '#fff', fontSize: '18px', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 12px rgba(76,55,250,0.3)', fontFamily: 'inherit' },
-  error: { color: '#ff6b6b', fontSize: '14px', marginTop: '12px' },
+  input: { width: '100%', padding: '14px 20px', borderRadius: '60px', border: '1px solid rgba(250,55,218,0.4)', background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: '16px', outline: 'none', marginBottom: '20px', boxSizing: 'border-box' },
+  joinButton: { width: '100%', padding: '14px', borderRadius: '60px', border: 'none', background: 'linear-gradient(95deg, #FA37DA, #4C37FA)', color: '#fff', fontSize: '18px', fontWeight: 600, cursor: 'pointer' },
+  error: { color: '#ff6b6b', marginTop: '12px' },
 };
 
 const roomStyles = {
   container: { height: '100vh', display: 'flex', flexDirection: 'column', background: '#111', fontFamily: "'Inter', sans-serif", position: 'relative' },
   notification: { position: 'fixed', top: '20px', right: '20px', background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(8px)', border: '1px solid rgba(250,55,218,0.3)', borderRadius: '40px', padding: '10px 20px', display: 'flex', alignItems: 'center', gap: '12px', color: '#fff', fontSize: '14px', zIndex: 100, boxShadow: '0 8px 20px rgba(0,0,0,0.5)' },
-  closeNotif: { background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', padding: '0', display: 'flex' },
+  closeNotif: { background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', padding: 0, display: 'flex' },
   mainArea: { flex: 1, display: 'flex', overflow: 'hidden', padding: '16px', gap: '16px' },
   videoArea: { flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0 },
   screenContainer: { width: '100%', height: '300px', background: '#222', borderRadius: '20px', overflow: 'hidden', position: 'relative', flexShrink: 0 },
   screenVideo: { width: '100%', height: '100%', objectFit: 'contain', background: '#111' },
   screenLabel: { position: 'absolute', bottom: '12px', left: '16px', color: '#fff', fontSize: '14px', background: 'rgba(0,0,0,0.6)', padding: '4px 12px', borderRadius: '20px' },
   gridWrapper: { flex: 1, position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column' },
-  grid: { display: 'flex', flexWrap: 'nowrap', justifyContent: 'center', alignItems: 'center', gap: '12px', padding: '8px 16px', overflowX: 'auto', scrollBehavior: 'smooth', height: '100%', minHeight: '150px' },
+  grid: { display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: '12px', padding: '8px', height: '100%' },
   participantTile: { position: 'relative', width: '200px', height: '150px', background: '#333', borderRadius: '16px', overflow: 'hidden', flexShrink: 0 },
   videoTile: { width: '100%', height: '100%', objectFit: 'cover', background: '#222' },
   participantName: { position: 'absolute', bottom: '6px', left: '10px', color: '#fff', fontSize: '13px', textShadow: '0 1px 4px rgba(0,0,0,0.8)' },
-  placeholderOverlay: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', color: '#fff', fontSize: '14px' },
+  placeholderOverlay: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', color: '#fff', background: 'rgba(0,0,0,0.5)' },
   chatPanel: { width: '280px', background: '#1a1a1a', borderRadius: '24px', display: 'flex', flexDirection: 'column', border: '1px solid rgba(250,55,218,0.15)', flexShrink: 0 },
   chatHeader: { padding: '14px 18px', fontWeight: 600, color: '#fff', borderBottom: '1px solid rgba(255,255,255,0.05)' },
   chatMessages: { flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '6px' },
@@ -435,7 +404,7 @@ const roomStyles = {
   chatMessage: { background: 'rgba(255,255,255,0.05)', padding: '6px 12px', borderRadius: '12px', fontSize: '14px', color: '#eee', wordBreak: 'break-word' },
   chatSender: { color: '#FA37DA', marginRight: '4px' },
   chatInputRow: { display: 'flex', padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.05)', gap: '8px' },
-  chatInput: { flex: 1, padding: '10px 16px', borderRadius: '40px', border: '1px solid rgba(250,55,218,0.3)', background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: '14px', outline: 'none', fontFamily: 'inherit' },
+  chatInput: { flex: 1, padding: '10px 16px', borderRadius: '40px', border: '1px solid rgba(250,55,218,0.3)', background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: '14px', outline: 'none' },
   sendButton: { background: 'linear-gradient(95deg, #FA37DA, #4C37FA)', border: 'none', borderRadius: '50%', width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', cursor: 'pointer', flexShrink: 0 },
   controlsBar: { display: 'flex', justifyContent: 'center', gap: '24px', padding: '16px 24px', background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)', borderTop: '1px solid rgba(250,55,218,0.1)' },
   controlButton: { background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(250,55,218,0.3)', borderRadius: '50%', width: '52px', height: '52px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', cursor: 'pointer', transition: '0.2s' },

@@ -40,7 +40,7 @@ export const useSocket = (roomId, userName, onStateUpdate, shouldConnect) => {
     });
 
     s.on('room-full', (data) => {
-      setError('Комната заполнена');
+      setError('Room full');
       if (onStateUpdate) onStateUpdate('room-full', data);
     });
 
